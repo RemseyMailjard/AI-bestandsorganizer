@@ -22,21 +22,7 @@ using Mscc.GenerativeAI;
 
 namespace AI_bestandsorganizer
 {
-    // ------- Settings-POCO (appsettings.json → "AIOrganizer") -------
-    // NOTE: You'll need to add this property to your AIOrganizerSettings class.
-    /*
-    public class AIOrganizerSettings
-    {
-        public string? ModelName { get; set; } = "gemini-pro";
-        public List<string>? SupportedExtensions { get; set; }
-        public Dictionary<string, string>? Categories { get; set; }
-        public string FallbackCategory { get; set; } = "Uncategorized";
-        public int MaxPromptChars { get; set; } = 8000;
-        public bool EnableDescriptiveFilenames { get; set; } = false; // <-- ADD THIS LINE
-    }
-    */
-
-    // NEW: Delegate for handling filename confirmation (UI-agnostic)
+    // Delegate for handling filename confirmation (UI-agnostic)
     /// <summary>
     /// Represents a method that prompts the user to confirm or modify a suggested filename.
     /// </summary>
@@ -140,6 +126,12 @@ namespace AI_bestandsorganizer
                             }
                         }
                     }
+                    else
+                    {
+                        _logger.LogWarning("Geen tekst geëxtraheerd uit {File}. Classificatie naar fallback.", fileInfo.Name);
+                        progress?.Report($"⚠️ Geen tekst geëxtraheerd uit '{fileInfo.Name}'. Gaat naar '{_settings.FallbackCategory}'.");
+                    }
+
 
                     targetLabel = _settings.Categories.TryGetValue(category, out var mapped)
                                   ? mapped
@@ -148,8 +140,9 @@ namespace AI_bestandsorganizer
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Classificatie/naamgeneratie mislukt voor {File}", fileInfo.Name);
-                    progress?.Report($"❌ Fout bij verwerken van {fileInfo.Name}: {ex.Message}");
+                    progress?.Report($"❌ Fout bij verwerken van {fileInfo.Name}: {ex.Message}. Gaat naar '{_settings.FallbackCategory}'.");
                     // Continue to move with original name if classification/name gen failed
+                    // category and targetLabel will remain fallback values
                 }
 
                 string targetDir = Path.Combine(dstDir, targetLabel);
@@ -184,18 +177,62 @@ namespace AI_bestandsorganizer
         // ---------------- GEMINI ----------------
         private async Task<string> ClassifyAsync(string text, CancellationToken ct)
         {
-            string catList = string.Join('\n', _settings.Categories.Keys);
+            // Create a list of category keys, stripping prefixes/suffixes if present in the *keys*
+            // But the current keys in appsettings.json are already clean ("Financiën", not "1. Financiën").
+            // So, no need to strip here.
+            string catList = string.Join('\n', _settings.Categories.Keys.Select(k => k.Trim()));
+
             string prompt =
-                $"Classificeer dit document in één categorie:\n{catList}\n- {_settings.FallbackCategory} (fallback)\n\n" +
+                $"Classificeer dit document in ÉÉN van de volgende categorieën:\n" +
+                $"{catList}\n" +
+                $"Als het document in geen van deze categorieën past, antwoord dan ' {_settings.FallbackCategory} '.\n" + // Add spaces for robust matching
+                $"BELANGRIJK: Antwoord ALLEEN met de naam van de categorie, zonder extra tekst, cijfers, punten of uitleg. Bijvoorbeeld: 'Financiën' of 'Gezondheid en Medisch'.\n\n" +
+                "Documentinhoud:\n" +
                 text[..Math.Min(text.Length, _settings.MaxPromptChars)];
 
-            var model = _google.GenerativeModel(_settings.ModelName);
-            var result = await model.GenerateContent(prompt, cancellationToken: ct);
-            string? ans = result.Text?.Trim();
+            _logger.LogDebug("Classify Prompt voor AI:\n{Prompt}", prompt);
 
-            return !string.IsNullOrEmpty(ans) && _settings.Categories.ContainsKey(ans)
-                 ? ans
-                 : _settings.FallbackCategory;
+            var model = _google.GenerativeModel(_settings.ModelName);
+            string? ans = null;
+            try
+            {
+                var result = await model.GenerateContent(prompt, cancellationToken: ct);
+                ans = result.Text?.Trim();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Fout bij aanroepen van Gemini API voor classificatie.");
+            }
+
+            _logger.LogDebug("Ruwe AI-antwoord: '{Ans}'", ans);
+
+            if (string.IsNullOrEmpty(ans))
+            {
+                _logger.LogWarning("AI gaf geen antwoord voor classificatie. Terugval naar '{Fallback}'.", _settings.FallbackCategory);
+                return _settings.FallbackCategory;
+            }
+
+            // Normalize AI's response for matching
+            string normalizedAns = ans.Trim();
+            // Remove common prefixes/suffixes the AI might add despite instructions
+            normalizedAns = System.Text.RegularExpressions.Regex.Replace(normalizedAns, @"^(Category:\s*|Categorie:\s*|\[|\]|\.|\d+\.\s*)", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            normalizedAns = System.Text.RegularExpressions.Regex.Replace(normalizedAns, @"(\.|\d+\.\s*)$", ""); // Remove trailing periods/numbers
+            normalizedAns = normalizedAns.Trim(); // Trim again after replacements
+
+            // Attempt to find a case-insensitive match for the normalized answer in the category keys
+            string? matchedCategory = _settings.Categories.Keys
+                .FirstOrDefault(key => string.Equals(key, normalizedAns, StringComparison.OrdinalIgnoreCase));
+
+            if (matchedCategory != null)
+            {
+                _logger.LogInformation("AI geclassificeerd als '{MatchedCategory}' (genormaliseerd van '{OriginalAns}').", matchedCategory, ans);
+                return matchedCategory; // Return the *exact* key from your settings
+            }
+            else
+            {
+                _logger.LogWarning("AI-antwoord '{OriginalAns}' kon niet worden gemapt op een bekende categorie. Genormaliseerd naar '{NormalizedAns}'. Terugval naar '{Fallback}'.", ans, normalizedAns, _settings.FallbackCategory);
+                return _settings.FallbackCategory;
+            }
         }
 
         // NEW: Method to generate a descriptive filename using Gemini
@@ -203,20 +240,33 @@ namespace AI_bestandsorganizer
         {
             // Truncate text for filename generation prompt if it's very long, to focus on key info.
             // Using a smaller section than MaxPromptChars might be beneficial for filename tasks.
-            const int filenamePromptTextLength = 2000; // Adjust as needed
-            string relevantText = text[..Math.Min(text.Length, filenamePromptTextLength)];
+            // Using a higher value here (e.g., up to MaxPromptChars) might yield better filenames.
+            string relevantText = text[..Math.Min(text.Length, _settings.MaxPromptChars)]; // Use MaxPromptChars for filename prompt too
 
             string prompt =
                 "Suggest a very concise, descriptive, and human-readable filename (without extension) for the following document content.\n" +
-                "The original filename was '{originalFilenameBase}'.\n" +
+                "The original filename was '{originalFilename}'.\n" + // Used originalFilename directly, not base
                 "Ensure the suggested name is suitable for a file path, avoiding special characters like \\ / : * ? \" < > | and starting/ending spaces.\n" +
                 "Keep it under 60 characters if possible, preferably using underscores or hyphens for spaces.\n" +
-                "Only provide the filename, nothing else.\n\n" +
+                "BELANGRIJK: Antwoord ALLEEN met de voorgestelde bestandsnaam, zonder extra tekst of uitleg.\n\n" +
+                "Documentinhoud:\n" +
                 relevantText;
 
+            _logger.LogDebug("Filename Prompt voor AI:\n{Prompt}", prompt);
+
             var model = _google.GenerativeModel(_settings.ModelName);
-            var result = await model.GenerateContent(prompt, cancellationToken: ct);
-            string? ans = result.Text?.Trim();
+            string? ans = null;
+            try
+            {
+                var result = await model.GenerateContent(prompt, cancellationToken: ct);
+                ans = result.Text?.Trim();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Fout bij aanroepen van Gemini API voor bestandsnaam generatie.");
+            }
+
+            _logger.LogDebug("Ruwe AI-antwoord (bestandsnaam): '{Ans}'", ans);
 
             if (string.IsNullOrEmpty(ans))
             {
@@ -226,6 +276,7 @@ namespace AI_bestandsorganizer
 
             // Sanitize the AI's suggestion
             string sanitizedAns = SanitizeFilename(ans);
+            _logger.LogDebug("Gesaneerde bestandsnaam: '{SanitizedAns}'", sanitizedAns);
             return string.IsNullOrEmpty(sanitizedAns) ? Path.GetFileNameWithoutExtension(originalFilename) : sanitizedAns;
         }
 
@@ -247,8 +298,8 @@ namespace AI_bestandsorganizer
             // Remove leading/trailing spaces, replace multiple spaces/underscores with single
             sanitized = sanitized.Trim()
                                  .Replace(" ", "_") // Replace spaces with underscores
-                                 .Replace("__", "_") // Replace double underscores from previous step
-                                 .Replace("__", "_"); // Handle triple/more underscores
+                                 .Replace("__", "_") // Replace double underscores from previous step (can create more)
+                                 .Replace("__", "_"); // One more pass for good measure
 
             // Ensure it doesn't start or end with an underscore (if it wasn't already)
             if (sanitized.StartsWith("_")) sanitized = sanitized.Substring(1);
@@ -266,11 +317,21 @@ namespace AI_bestandsorganizer
         }
 
         // ---------------- TEXT EXTRACT ----------------
-        private static async Task<string> ExtractTextAsync(FileInfo fi)
+        private async Task<string> ExtractTextAsync(FileInfo fi) // Changed to non-static to use _logger
         {
             string ext = fi.Extension.ToLowerInvariant();
             if (ext is ".txt" or ".md")
-                return await File.ReadAllTextAsync(fi.FullName).ConfigureAwait(false);
+            {
+                try
+                {
+                    return await File.ReadAllTextAsync(fi.FullName).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Fout bij lezen van tekstbestand {File}", fi.Name);
+                    return string.Empty;
+                }
+            }
 
             if (ext == ".docx")
             {
@@ -286,8 +347,7 @@ namespace AI_bestandsorganizer
                 }
                 catch (Exception ex)
                 {
-                    // Log or handle error if docx extraction fails (e.g., corrupted file)
-                    Console.Error.WriteLine($"Error extracting text from DOCX {fi.Name}: {ex.Message}");
+                    _logger.LogError(ex, "Fout bij extraheren van tekst uit DOCX {File}", fi.Name);
                 }
                 return sb.ToString();
             }
@@ -303,8 +363,7 @@ namespace AI_bestandsorganizer
                 }
                 catch (Exception ex)
                 {
-                    // Log or handle error if pdf extraction fails (e.g., encrypted/corrupted file)
-                    Console.Error.WriteLine($"Error extracting text from PDF {fi.Name}: {ex.Message}");
+                    _logger.LogError(ex, "Fout bij extraheren van tekst uit PDF {File}", fi.Name);
                 }
                 return sb.ToString();
             }
