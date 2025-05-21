@@ -80,7 +80,10 @@ namespace AI_bestandsorganizer
 
             int processed = 0, moved = 0;
 
-            foreach (var fileInfo in src.EnumerateFiles())
+            // --- CHANGE START ---
+            // Use SearchOption.AllDirectories to include files in subfolders
+            foreach (var fileInfo in src.EnumerateFiles("*", SearchOption.AllDirectories))
+            // --- CHANGE END ---
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -91,7 +94,7 @@ namespace AI_bestandsorganizer
                 }
 
                 processed++;
-                progress?.Report($"📄 {fileInfo.Name} lezen …");
+                progress?.Report($"📄 {fileInfo.FullName} lezen …"); // Report full path for clarity in subfolders
 
                 string category = _settings.FallbackCategory;
                 string targetLabel = $"0. {_settings.FallbackCategory}";
@@ -128,7 +131,7 @@ namespace AI_bestandsorganizer
                     }
                     else
                     {
-                        _logger.LogWarning("Geen tekst geëxtraheerd uit {File}. Classificatie naar fallback.", fileInfo.Name);
+                        _logger.LogWarning("Geen tekst geëxtraheerd uit {File}. Classificatie naar fallback.", fileInfo.FullName);
                         progress?.Report($"⚠️ Geen tekst geëxtraheerd uit '{fileInfo.Name}'. Gaat naar '{_settings.FallbackCategory}'.");
                     }
 
@@ -139,7 +142,7 @@ namespace AI_bestandsorganizer
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Classificatie/naamgeneratie mislukt voor {File}", fileInfo.Name);
+                    _logger.LogError(ex, "Classificatie/naamgeneratie mislukt voor {File}", fileInfo.FullName);
                     progress?.Report($"❌ Fout bij verwerken van {fileInfo.Name}: {ex.Message}. Gaat naar '{_settings.FallbackCategory}'.");
                     // Continue to move with original name if classification/name gen failed
                     // category and targetLabel will remain fallback values
@@ -165,7 +168,7 @@ namespace AI_bestandsorganizer
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Verplaatsen mislukt voor {File}", fileInfo.Name);
+                    _logger.LogError(ex, "Verplaatsen mislukt voor {File}", fileInfo.FullName);
                     progress?.Report($"❌ Fout bij verplaatsen van {fileInfo.Name}: {ex.Message}");
                 }
             }
