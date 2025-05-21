@@ -1,0 +1,56 @@
+﻿<Window x:Class="AI_bestandsorganizer.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AI File Organizer" Height="320" Width="460"
+        ResizeMode="CanResize">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <!-- Nieuw: Footer -->
+        </Grid.RowDefinitions>
+
+        <!-- API-key -->
+        <Label Content="Google API-key:"/>
+        <PasswordBox x:Name="ApiKeyBox" Grid.Row="0" Margin="120,0,0,6"/>
+
+        <!-- Source -->
+        <Label Content="Bronmap:" Grid.Row="1"/>
+        <TextBox x:Name="SrcBox" Grid.Row="1" Margin="120,0,36,6"/>
+        <Button Content="…" Width="26" Grid.Row="1" HorizontalAlignment="Right"
+                Click="BrowseSrc"/>
+
+        <!-- Destination -->
+        <Label Content="Doelmap:" Grid.Row="2"/>
+        <TextBox x:Name="DstBox" Grid.Row="2" Margin="120,0,36,6"/>
+        <Button Content="…" Width="26" Grid.Row="2" HorizontalAlignment="Right"
+                Click="BrowseDst"/>
+
+        <!-- Model -->
+        <Label Content="Gemini-model:" Grid.Row="3"/>
+        <ComboBox x:Name="ModelBox" Grid.Row="3" Margin="120,0,0,6" Width="240">
+            <ComboBoxItem Content="gemini-2.5-pro-preview-05-06" IsSelected="True"/>
+            <ComboBoxItem Content="gemini-1.5-pro-latest"/>
+            <ComboBoxItem Content="gemini-pro"/>
+        </ComboBox>
+
+        <!-- Log -->
+        <TextBox x:Name="LogBox" Grid.Row="4" Height="90" Margin="0,6,0,0"
+                 IsReadOnly="True" VerticalScrollBarVisibility="Auto"/>
+
+        <!-- Run -->
+        <Button Content="Organiseer" Grid.Row="5" Height="32" Width="100"
+                HorizontalAlignment="Right" Click="Run_Click"/>
+
+        <!-- Footer -->
+        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,12,0,0">
+            <TextBlock Text="Made by Remsey Mailjard" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <Button Content="LinkedIn" Padding="6,2" Click="OpenLinkedIn"/>
+        </StackPanel>
+    </Grid>
+</Window>
