@@ -1,16 +1,18 @@
 ﻿using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;                         // ← nodig voor FirstOrDefault
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 using SysForms = System.Windows.Forms;              // alleen FolderBrowserDialog
 using WpfMsg = System.Windows.MessageBox;
-using WpfTextBox = System.Windows.Controls.TextBox;  // expliciete alias voor WPF-TextBox
+using WpfTextBox = System.Windows.Controls.TextBox;   // expliciete alias
 
 namespace AI_bestandsorganizer
 {
@@ -32,6 +34,7 @@ namespace AI_bestandsorganizer
             _logger    = logger     ?? throw new ArgumentNullException(nameof(logger));
             _settings  = settings.Value ?? throw new ArgumentNullException(nameof(settings));
 
+            // UI init
             ApiKeyBox.Password = _settings.ApiKey;
 
             var modelItem = ModelBox.Items.OfType<ComboBoxItem>()
@@ -78,6 +81,7 @@ namespace AI_bestandsorganizer
                 return;
             }
 
+            // settings live bijwerken
             _settings.ApiKey    = ApiKeyBox.Password;
             _settings.ModelName = ((ComboBoxItem)ModelBox.SelectedItem)!.Content!.ToString()!;
 
