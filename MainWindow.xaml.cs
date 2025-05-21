@@ -20,19 +20,19 @@ namespace AI_bestandsorganizer
     {
         private readonly AIFileOrganizer _organizer;
         private readonly ILogger<MainWindow> _logger;
-        private readonly AIOrganizerSettings _settings;
+        private readonly AIOrganizerSettings _settings; // Dit is de singleton die door DI wordt geïnjecteerd
         private CancellationTokenSource? _cts;
 
         public MainWindow(
             AIFileOrganizer organizer,
             ILogger<MainWindow> logger,
-            IOptions<AIOrganizerSettings> settings)
+            IOptions<AIOrganizerSettings> settings) // AIOrganizerSettings wordt hier via IOptions<T> binnengehaald
         {
             InitializeComponent();
 
             _organizer = organizer ?? throw new ArgumentNullException(nameof(organizer));
             _logger    = logger     ?? throw new ArgumentNullException(nameof(logger));
-            _settings  = settings.Value ?? throw new ArgumentNullException(nameof(settings));
+            _settings  = settings.Value ?? throw new ArgumentNullException(nameof(settings)); // Haal de geconfigureerde instellingen op
 
             // UI init
             ApiKeyBox.Password = _settings.ApiKey;
@@ -45,6 +45,9 @@ namespace AI_bestandsorganizer
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
             DstBox.Text = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "AI-mappen");
+
+            // NIEUW: Stel de checkbox in op basis van de geladen instelling
+            EnableRenamingCheckBox.IsChecked = _settings.EnableFileRenaming;
         }
 
         // ---------- Browse-knoppen ----------
@@ -81,9 +84,12 @@ namespace AI_bestandsorganizer
                 return;
             }
 
-            // settings live bijwerken
-            _settings.ApiKey    = ApiKeyBox.Password;
+            // settings live bijwerken voor de huidige run
+            _settings.ApiKey = ApiKeyBox.Password;
             _settings.ModelName = ((ComboBoxItem)ModelBox.SelectedItem)!.Content!.ToString()!;
+            // NIEUW: Werk de EnableFileRenaming setting bij van de UI
+            _settings.EnableFileRenaming = EnableRenamingCheckBox.IsChecked ?? false;
+
 
             _cts = new CancellationTokenSource();
 
@@ -91,44 +97,42 @@ namespace AI_bestandsorganizer
             {
                 var prog = new Progress<string>(Log);
 
-                // Initialize the FilenameConfirmationHandler conditionally
+                // Initialiseer de FilenameConfirmationHandler ALLEEN als hernoemen is ingeschakeld
                 FilenameConfirmationHandler? filenameConfirmer = null;
-                if (_settings.EnableDescriptiveFilenames)
+                // Deel 'EnableDescriptiveFilenames' blijft actief om de AI-suggesties te genereren.
+                // 'EnableFileRenaming' is de override om te bepalen of *überhaupt* hernoemd wordt.
+                if (_settings.EnableFileRenaming && _settings.EnableDescriptiveFilenames)
                 {
-                    // This lambda function matches the FilenameConfirmationHandler delegate signature.
-                    // It will be executed on a background thread by AIFileOrganizer,
-                    // so we must use Dispatcher.Invoke to interact with the UI.
                     filenameConfirmer = async (originalFilenameBase, suggestedFilenameBase, progressReporter) =>
                     {
-                        // Ensure the dialog is opened on the UI thread and wait for its result.
                         return await Dispatcher.Invoke(async () =>
                         {
-                            // Optionally, report to the main log box that a dialog is pending
                             progressReporter?.Report($"Awaiting filename confirmation for '{originalFilenameBase}'...");
 
                             var dialog = new FilenameInputDialog(originalFilenameBase, suggestedFilenameBase);
-                            dialog.Owner = this; // Set the main window as owner to center the dialog relative to it
+                            dialog.Owner = this;
 
-                            bool? dialogResult = dialog.ShowDialog(); // ShowDialog is modal and blocks until closed
+                            bool? dialogResult = dialog.ShowDialog();
 
                             if (dialogResult == true)
                             {
-                                // User made a selection in the dialog
                                 progressReporter?.Report($"Filename confirmed: '{dialog.ResultFilename}'");
                                 return dialog.ResultFilename;
                             }
                             else
                             {
-                                // Dialog was closed without a definitive selection (e.g., via ESC or close button)
                                 progressReporter?.Report($"Filename confirmation cancelled. Keeping original name: '{originalFilenameBase}'");
-                                return originalFilenameBase; // Default to original filename
+                                return originalFilenameBase;
                             }
                         });
                     };
                 }
+                // Als EnableFileRenaming FALSE is, blijft filenameConfirmer NULL.
+                // AIFileOrganizer zal dan default de originele bestandsnaam gebruiken.
+
 
                 var (proc, moved) = await _organizer
-                    .OrganizeAsync(SrcBox.Text, DstBox.Text, filenameConfirmer, prog, _cts.Token); // Pass the confirmer here
+                    .OrganizeAsync(SrcBox.Text, DstBox.Text, filenameConfirmer, prog, _cts.Token);
 
                 Log($"✅ Klaar! {moved}/{proc} bestanden verplaatst.");
             }
