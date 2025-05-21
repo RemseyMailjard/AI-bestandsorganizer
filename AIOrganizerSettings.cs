@@ -14,5 +14,6 @@ namespace AI_bestandsorganizer
         public List<string> SupportedExtensions { get; set; } = new() { ".pdf", ".docx", ".txt", ".md" };
         public string FallbackCategory { get; set; } = "Overig";
         public int MaxPromptChars { get; set; } = 4_000;
+        public bool EnableDescriptiveFilenames { get; set; } = true;
     }
 }

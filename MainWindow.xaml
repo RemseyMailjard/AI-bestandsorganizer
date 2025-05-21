@@ -3,67 +3,54 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="AI File Organizer" Height="320" Width="460"
         ResizeMode="CanResize">
-    <Grid>
-        <!-- Shadow card -->
-        <Border Background="#FFF" CornerRadius="10" Padding="24" Margin="20"
-            Effect="{DynamicResource {x:Static SystemParameters.DropShadowKey}}">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <!-- Nieuw: Footer -->
+        </Grid.RowDefinitions>
 
-                <!-- Header -->
-                <TextBlock Text="AI File Organizer" FontSize="20" FontWeight="SemiBold"/>
+        <!-- API-key -->
+        <Label Content="Google API-key:"/>
+        <PasswordBox x:Name="ApiKeyBox" Grid.Row="0" Margin="120,0,0,6"/>
 
-                <!-- API‑key -->
-                <StackPanel Orientation="Horizontal" Grid.Row="1" Margin="0,8,0,0">
-                    <TextBlock Text="Google API‑key:" Width="130" VerticalAlignment="Center"/>
-                    <PasswordBox x:Name="ApiKeyBox" Width="260"/>
-                </StackPanel>
+        <!-- Source -->
+        <Label Content="Bronmap:" Grid.Row="1"/>
+        <TextBox x:Name="SrcBox" Grid.Row="1" Margin="120,0,36,6"/>
+        <Button Content="…" Width="26" Grid.Row="1" HorizontalAlignment="Right"
+                Click="BrowseSrc"/>
 
-                <!-- Source -->
-                <StackPanel Orientation="Horizontal" Grid.Row="2" Margin="0,4,0,0">
-                    <TextBlock Text="Bronmap:" Width="130" VerticalAlignment="Center"/>
-                    <WpfTextBox x:Name="SrcBox" Width="230"/>
-                    <Button Content="&#xE8B6;" FontFamily="Segoe MDL2 Assets" Width="32" Click="BrowseSrc"/>
-                </StackPanel>
+        <!-- Destination -->
+        <Label Content="Doelmap:" Grid.Row="2"/>
+        <TextBox x:Name="DstBox" Grid.Row="2" Margin="120,0,36,6"/>
+        <Button Content="…" Width="26" Grid.Row="2" HorizontalAlignment="Right"
+                Click="BrowseDst"/>
 
-                <!-- Destination -->
-                <StackPanel Orientation="Horizontal" Grid.Row="3" Margin="0,4,0,0">
-                    <TextBlock Text="Doelmap:" Width="130" VerticalAlignment="Center"/>
-                    <WpfTextBox x:Name="DstBox" Width="230"/>
-                    <Button Content="&#xE8B6;" FontFamily="Segoe MDL2 Assets" Width="32" Click="BrowseDst"/>
-                </StackPanel>
+        <!-- Model -->
+        <Label Content="Gemini-model:" Grid.Row="3"/>
+        <ComboBox x:Name="ModelBox" Grid.Row="3" Margin="120,0,0,6" Width="240">
+            <ComboBoxItem Content="gemini-2.5-pro-preview-05-06" IsSelected="True"/>
+            <ComboBoxItem Content="gemini-1.5-pro-latest"/>
+            <ComboBoxItem Content="gemini-pro"/>
+        </ComboBox>
 
-                <!-- Model -->
-                <StackPanel Orientation="Horizontal" Grid.Row="4" Margin="0,4,0,0">
-                    <TextBlock Text="Gemini‑model:" Width="130" VerticalAlignment="Center"/>
-                    <ComboBox x:Name="ModelBox" Width="260">
-                        <ComboBoxItem Content="gemini-2.5-pro-preview-05-06" IsSelected="True"/>
-                        <ComboBoxItem Content="gemini-1.5-pro-latest"/>
-                        <ComboBoxItem Content="gemini-pro"/>
-                    </ComboBox>
-                </StackPanel>
+        <!-- Log -->
+        <TextBox x:Name="LogBox" Grid.Row="4" Height="90" Margin="0,6,0,0"
+                 IsReadOnly="True" VerticalScrollBarVisibility="Auto"/>
 
-                <!-- Log -->
-                <TextBox x:Name="LogBox" Grid.Row="5" Height="120" Margin="0,10,0,0"
-                     IsReadOnly="True" VerticalScrollBarVisibility="Auto"/>
+        <!-- Run -->
+        <Button Content="Organiseer" Grid.Row="5" Height="32" Width="100"
+                HorizontalAlignment="Right" Click="Run_Click"/>
 
-                <!-- Run & footer -->
-                <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="SpaceBetween" Margin="0,16,0,0">
-                    <Button Content="Organiseer" Width="120" Style="{StaticResource PrimaryButton}" Click="Run_Click"/>
-                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                        <TextBlock Text="Made by Remsey" VerticalAlignment="Center" Margin="0,0,8,0"/>
-                        <Button Content="LinkedIn" Style="{StaticResource RoundedBox}" Click="OpenLinkedIn"/>
-                    </StackPanel>
-                </StackPanel>
-            </Grid>
-        </Border>
+        <!-- Footer -->
+        <StackPanel Grid.Row="6" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,12,0,0">
+            <TextBlock Text="Made by Remsey Mailjard" VerticalAlignment="Center" Margin="0,0,8,0"/>
+            <Button Content="LinkedIn" Padding="6,2" Click="OpenLinkedIn"/>
+        </StackPanel>
     </Grid>
 </Window>

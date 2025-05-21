@@ -90,8 +90,45 @@ namespace AI_bestandsorganizer
             try
             {
                 var prog = new Progress<string>(Log);
+
+                // Initialize the FilenameConfirmationHandler conditionally
+                FilenameConfirmationHandler? filenameConfirmer = null;
+                if (_settings.EnableDescriptiveFilenames)
+                {
+                    // This lambda function matches the FilenameConfirmationHandler delegate signature.
+                    // It will be executed on a background thread by AIFileOrganizer,
+                    // so we must use Dispatcher.Invoke to interact with the UI.
+                    filenameConfirmer = async (originalFilenameBase, suggestedFilenameBase, progressReporter) =>
+                    {
+                        // Ensure the dialog is opened on the UI thread and wait for its result.
+                        return await Dispatcher.Invoke(async () =>
+                        {
+                            // Optionally, report to the main log box that a dialog is pending
+                            progressReporter?.Report($"Awaiting filename confirmation for '{originalFilenameBase}'...");
+
+                            var dialog = new FilenameInputDialog(originalFilenameBase, suggestedFilenameBase);
+                            dialog.Owner = this; // Set the main window as owner to center the dialog relative to it
+
+                            bool? dialogResult = dialog.ShowDialog(); // ShowDialog is modal and blocks until closed
+
+                            if (dialogResult == true)
+                            {
+                                // User made a selection in the dialog
+                                progressReporter?.Report($"Filename confirmed: '{dialog.ResultFilename}'");
+                                return dialog.ResultFilename;
+                            }
+                            else
+                            {
+                                // Dialog was closed without a definitive selection (e.g., via ESC or close button)
+                                progressReporter?.Report($"Filename confirmation cancelled. Keeping original name: '{originalFilenameBase}'");
+                                return originalFilenameBase; // Default to original filename
+                            }
+                        });
+                    };
+                }
+
                 var (proc, moved) = await _organizer
-                    .OrganizeAsync(SrcBox.Text, DstBox.Text, prog, _cts.Token);
+                    .OrganizeAsync(SrcBox.Text, DstBox.Text, filenameConfirmer, prog, _cts.Token); // Pass the confirmer here
 
                 Log($"✅ Klaar! {moved}/{proc} bestanden verplaatst.");
             }
