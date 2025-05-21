@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Text.RegularExpressions; // Added for Regex
 
 // OpenXML & PdfPig
 using DocumentFormat.OpenXml.Packaging;
@@ -80,10 +81,7 @@ namespace AI_bestandsorganizer
 
             int processed = 0, moved = 0;
 
-            // --- CHANGE START ---
-            // Use SearchOption.AllDirectories to include files in subfolders
             foreach (var fileInfo in src.EnumerateFiles("*", SearchOption.AllDirectories))
-            // --- CHANGE END ---
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
@@ -105,13 +103,14 @@ namespace AI_bestandsorganizer
                     string text = await ExtractTextAsync(fileInfo).ConfigureAwait(false);
                     if (!string.IsNullOrWhiteSpace(text))
                     {
+                        // First, classify the document
                         category = await ClassifyAsync(text, cancellationToken).ConfigureAwait(false);
 
-                        // NEW: Generate descriptive filename and get user confirmation
+                        // Then, generate descriptive filename, passing the *classified category*
                         if (_settings.EnableDescriptiveFilenames && confirmFilename != null)
                         {
-                            progress?.Report($"📝 Generating descriptive filename for '{fileInfo.Name}'...");
-                            string suggestedFilename = await GenerateFilenameAsync(text, fileInfo.Name, cancellationToken).ConfigureAwait(false);
+                            progress?.Report($"📝 Generating descriptive filename for '{fileInfo.Name}' ({category})...");
+                            string suggestedFilename = await GenerateFilenameAsync(text, fileInfo.Name, category, cancellationToken).ConfigureAwait(false); // Pass category
 
                             // Call the external handler to get the final desired filename from the user
                             finalFilenameBase = await confirmFilename(
@@ -134,7 +133,6 @@ namespace AI_bestandsorganizer
                         _logger.LogWarning("Geen tekst geëxtraheerd uit {File}. Classificatie naar fallback.", fileInfo.FullName);
                         progress?.Report($"⚠️ Geen tekst geëxtraheerd uit '{fileInfo.Name}'. Gaat naar '{_settings.FallbackCategory}'.");
                     }
-
 
                     targetLabel = _settings.Categories.TryGetValue(category, out var mapped)
                                   ? mapped
@@ -180,15 +178,12 @@ namespace AI_bestandsorganizer
         // ---------------- GEMINI ----------------
         private async Task<string> ClassifyAsync(string text, CancellationToken ct)
         {
-            // Create a list of category keys, stripping prefixes/suffixes if present in the *keys*
-            // But the current keys in appsettings.json are already clean ("Financiën", not "1. Financiën").
-            // So, no need to strip here.
             string catList = string.Join('\n', _settings.Categories.Keys.Select(k => k.Trim()));
 
             string prompt =
                 $"Classificeer dit document in ÉÉN van de volgende categorieën:\n" +
                 $"{catList}\n" +
-                $"Als het document in geen van deze categorieën past, antwoord dan ' {_settings.FallbackCategory} '.\n" + // Add spaces for robust matching
+                $"Als het document in geen van deze categorieën past, antwoord dan ' {_settings.FallbackCategory} '.\n" +
                 $"BELANGRIJK: Antwoord ALLEEN met de naam van de categorie, zonder extra tekst, cijfers, punten of uitleg. Bijvoorbeeld: 'Financiën' of 'Gezondheid en Medisch'.\n\n" +
                 "Documentinhoud:\n" +
                 text[..Math.Min(text.Length, _settings.MaxPromptChars)];
@@ -207,7 +202,7 @@ namespace AI_bestandsorganizer
                 _logger.LogError(ex, "Fout bij aanroepen van Gemini API voor classificatie.");
             }
 
-            _logger.LogDebug("Ruwe AI-antwoord: '{Ans}'", ans);
+            _logger.LogDebug("Ruwe AI-antwoord (classificatie): '{Ans}'", ans);
 
             if (string.IsNullOrEmpty(ans))
             {
@@ -217,10 +212,9 @@ namespace AI_bestandsorganizer
 
             // Normalize AI's response for matching
             string normalizedAns = ans.Trim();
-            // Remove common prefixes/suffixes the AI might add despite instructions
-            normalizedAns = System.Text.RegularExpressions.Regex.Replace(normalizedAns, @"^(Category:\s*|Categorie:\s*|\[|\]|\.|\d+\.\s*)", "", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
-            normalizedAns = System.Text.RegularExpressions.Regex.Replace(normalizedAns, @"(\.|\d+\.\s*)$", ""); // Remove trailing periods/numbers
-            normalizedAns = normalizedAns.Trim(); // Trim again after replacements
+            normalizedAns = Regex.Replace(normalizedAns, @"^(Category:\s*|Categorie:\s*|\[|\]|\.|\d+\.\s*)", "", RegexOptions.IgnoreCase);
+            normalizedAns = Regex.Replace(normalizedAns, @"(\.|\d+\.\s*)$", "");
+            normalizedAns = normalizedAns.Trim();
 
             // Attempt to find a case-insensitive match for the normalized answer in the category keys
             string? matchedCategory = _settings.Categories.Keys
@@ -238,19 +232,19 @@ namespace AI_bestandsorganizer
             }
         }
 
-        // NEW: Method to generate a descriptive filename using Gemini
-        private async Task<string> GenerateFilenameAsync(string text, string originalFilename, CancellationToken ct)
+        // UPDATED: Method to generate a descriptive filename using Gemini, now accepts category
+        private async Task<string> GenerateFilenameAsync(string text, string originalFilename, string category, CancellationToken ct)
         {
-            // Truncate text for filename generation prompt if it's very long, to focus on key info.
-            // Using a smaller section than MaxPromptChars might be beneficial for filename tasks.
-            // Using a higher value here (e.g., up to MaxPromptChars) might yield better filenames.
-            string relevantText = text[..Math.Min(text.Length, _settings.MaxPromptChars)]; // Use MaxPromptChars for filename prompt too
+            // Use MaxPromptChars for filename generation, providing full context
+            string relevantText = text[..Math.Min(text.Length, _settings.MaxPromptChars)];
 
             string prompt =
-                "Suggest a very concise, descriptive, and human-readable filename (without extension) for the following document content.\n" +
-                "The original filename was '{originalFilename}'.\n" + // Used originalFilename directly, not base
-                "Ensure the suggested name is suitable for a file path, avoiding special characters like \\ / : * ? \" < > | and starting/ending spaces.\n" +
-                "Keep it under 60 characters if possible, preferably using underscores or hyphens for spaces.\n" +
+                "Suggest a highly descriptive, concise, and human-readable filename (without extension) for the following document content.\n" +
+                $"The document has been classified into the category: '{category}'. Use this as context.\n" +
+                "Focus on the core topic, relevant dates (e.g., YYYY-MM-DD or YYYYMMDD if present), and key entities (e.g., company names, project names).\n" +
+                "Avoid generic terms like 'document', 'scan', 'report' unless they are part of a specific, meaningful title within the content.\n" +
+                "The original filename was '{originalFilename}'.\n" +
+                "Ensure the name is suitable for file paths (no invalid characters like \\ / : * ? \" < > |), keep it under 60 characters, and use underscores or hyphens for spaces.\n" +
                 "BELANGRIJK: Antwoord ALLEEN met de voorgestelde bestandsnaam, zonder extra tekst of uitleg.\n\n" +
                 "Documentinhoud:\n" +
                 relevantText;
@@ -283,36 +277,28 @@ namespace AI_bestandsorganizer
             return string.IsNullOrEmpty(sanitizedAns) ? Path.GetFileNameWithoutExtension(originalFilename) : sanitizedAns;
         }
 
-        // NEW: Helper method to sanitize a filename string
-        // Made public static so it can be re-used by the console app for user input sanitization if desired.
         public static string SanitizeFilename(string filename)
         {
             if (string.IsNullOrWhiteSpace(filename)) return string.Empty;
 
-            // Define invalid characters for filenames and paths
             char[] invalidChars = Path.GetInvalidFileNameChars()
                                   .Concat(Path.GetInvalidPathChars())
                                   .Distinct()
                                   .ToArray();
 
-            // Replace invalid characters with an underscore
             string sanitized = new string(filename.Select(c => invalidChars.Contains(c) ? '_' : c).ToArray());
 
-            // Remove leading/trailing spaces, replace multiple spaces/underscores with single
             sanitized = sanitized.Trim()
-                                 .Replace(" ", "_") // Replace spaces with underscores
-                                 .Replace("__", "_") // Replace double underscores from previous step (can create more)
-                                 .Replace("__", "_"); // One more pass for good measure
+                                 .Replace(" ", "_")
+                                 .Replace("__", "_")
+                                 .Replace("__", "_");
 
-            // Ensure it doesn't start or end with an underscore (if it wasn't already)
             if (sanitized.StartsWith("_")) sanitized = sanitized.Substring(1);
             if (sanitized.EndsWith("_")) sanitized = sanitized.Substring(0, sanitized.Length - 1);
 
-            // Limit length to avoid path issues (e.g., 100-150 characters is a good practical limit)
             if (sanitized.Length > 100)
             {
                 sanitized = sanitized.Substring(0, 100);
-                // Ensure it doesn't end with an underscore if truncated
                 if (sanitized.EndsWith("_")) sanitized = sanitized.Substring(0, sanitized.Length - 1);
             }
 
