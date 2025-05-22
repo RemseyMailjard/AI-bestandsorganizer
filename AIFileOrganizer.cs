@@ -1,12 +1,13 @@
-﻿// ---------- AIFileOrganizer.cs ----------
+﻿// ---------- AIFileOrganizer.cs (improved) ----------
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-using System.Text.RegularExpressions; // Added for Regex
 
 // OpenXML & PdfPig
 using DocumentFormat.OpenXml.Packaging;
@@ -23,115 +24,104 @@ using Mscc.GenerativeAI;
 
 namespace AI_bestandsorganizer
 {
-    // Delegate for handling filename confirmation (UI-agnostic)
     /// <summary>
-    /// Represents a method that prompts the user to confirm or modify a suggested filename.
+    /// Delegate used to let a UI‑layer confirm or override a suggested filename.
     /// </summary>
-    /// <param name="originalFilenameBase">The original filename without extension (e.g., "document").</param>
-    /// <param name="suggestedFilenameBase">The AI-suggested filename without extension (e.g., "Project_Report_Q3_2023").</param>
-    /// <param name="progress">An optional progress reporter for outputting messages to the user.</param>
-    /// <returns>
-    /// The final chosen filename without extension.
-    /// Return <paramref name="suggestedFilenameBase"/> to accept AI suggestion.
-    /// Return <paramref name="originalFilenameBase"/> to keep the original name.
-    /// Return a new string for a custom name.
-    /// </returns>
-    public delegate Task<string> FilenameConfirmationHandler(string originalFilenameBase, string suggestedFilenameBase, IProgress<string>? progress);
+    public delegate Task<string> FilenameConfirmationHandler(string originalFilenameBase,
+                                                             string suggestedFilenameBase,
+                                                             IProgress<string>? progress);
 
-
-    // ----------------------------------------------------------------
-    //  AIFileOrganizer  –  organiseert bestanden m.b.v. Gemini-API
-    // ----------------------------------------------------------------
-    public class AIFileOrganizer
+    //---------------------------------------------------------------------
+    //  AIFileOrganizer  –  organizes files with help of Gemini‑API
+    //---------------------------------------------------------------------
+    public partial class AIFileOrganizer
     {
         private readonly AIOrganizerSettings _settings;
         private readonly ILogger<AIFileOrganizer> _logger;
         private readonly HashSet<string> _supported;
         private readonly GoogleAI _google;
 
-        public AIFileOrganizer(
-            IOptions<AIOrganizerSettings> settings,
-            GoogleAI google,
-            ILogger<AIFileOrganizer> logger)
+        // Heuristic keyword→category map (very light weight, only used when AI fails)
+        private static readonly (Regex regex, string category)[] _keywordMap =
         {
-            _settings  = settings.Value ?? throw new ArgumentNullException(nameof(settings));
-            _google    = google       ?? throw new ArgumentNullException(nameof(google));
-            _logger    = logger       ?? throw new ArgumentNullException(nameof(logger));
+            (new Regex(@"\b(invoice|bank|statement|rekening|factuur)\b", RegexOptions.IgnoreCase), "Financiën"),
+            (new Regex(@"\b(belasting|tax|aangifte)\b",               RegexOptions.IgnoreCase), "Belastingen"),
+            (new Regex(@"\b(polis|verzekering|premium)\b",            RegexOptions.IgnoreCase), "Verzekeringen"),
+            (new Regex(@"\b(hypotheek|huurcontract|notaris)\b",        RegexOptions.IgnoreCase), "Woning"),
+            (new Regex(@"\b(medisch|recept|dokter|gezondheid)\b",      RegexOptions.IgnoreCase), "Gezondheid en Medisch"),
+            (new Regex(@"\b(autoverzekering|kenteken|apk)\b",          RegexOptions.IgnoreCase), "Voertuigen")
+        };
+
+        //-----------------------------------------------------------------
+        public AIFileOrganizer(IOptions<AIOrganizerSettings> options,
+                               GoogleAI google,
+                               ILogger<AIFileOrganizer> logger)
+        {
+            _settings = options?.Value ?? throw new ArgumentNullException(nameof(options));
+            _google   = google           ?? throw new ArgumentNullException(nameof(google));
+            _logger   = logger           ?? throw new ArgumentNullException(nameof(logger));
 
             _supported = new HashSet<string>(
                 (_settings.SupportedExtensions ?? new()).Select(e => e.ToLowerInvariant()),
                 StringComparer.OrdinalIgnoreCase);
         }
 
-        // ---------------- PUBLIC ----------------
+        //-----------------------------------------------------------------
         public async Task<(int processed, int moved)> OrganizeAsync(
             string srcDir,
             string dstDir,
-            FilenameConfirmationHandler? confirmFilename = null, // NEW PARAMETER
+            FilenameConfirmationHandler? confirmFilename = null,
             IProgress<string>? progress = null,
             CancellationToken cancellationToken = default)
         {
             srcDir = Path.GetFullPath(srcDir);
             dstDir = Path.GetFullPath(dstDir);
-
             var src = new DirectoryInfo(srcDir);
             if (!src.Exists) throw new DirectoryNotFoundException(src.FullName);
-
             Directory.CreateDirectory(dstDir);
 
             int processed = 0, moved = 0;
 
-            foreach (var fileInfo in src.EnumerateFiles("*", SearchOption.AllDirectories))
+            foreach (var fi in src.EnumerateFiles("*", SearchOption.AllDirectories))
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (!_supported.Contains(fileInfo.Extension.ToLowerInvariant()))
+                if (!_supported.Contains(fi.Extension.ToLowerInvariant()))
                 {
-                    progress?.Report($"Skipping {fileInfo.Name} (unsupported extension)");
+                    progress?.Report($"⏭️  Skipping {fi.Name} (unsupported)");
                     continue;
                 }
 
                 processed++;
-                progress?.Report($"📄 {fileInfo.FullName} lezen …"); // Report full path for clarity in subfolders
+                progress?.Report($"📄 Lezen: {fi.FullName}");
 
                 string category = _settings.FallbackCategory;
                 string targetLabel = $"0. {_settings.FallbackCategory}";
-                string finalFilenameBase = Path.GetFileNameWithoutExtension(fileInfo.Name); // Default to original name
+                string finalFilenameBase = Path.GetFileNameWithoutExtension(fi.Name);
 
                 try
                 {
-                    string text = await ExtractTextAsync(fileInfo).ConfigureAwait(false);
+                    string text = await ExtractTextAsync(fi).ConfigureAwait(false);
+
                     if (!string.IsNullOrWhiteSpace(text))
                     {
-                        // First, classify the document
                         category = await ClassifyAsync(text, cancellationToken).ConfigureAwait(false);
 
-                        // Then, generate descriptive filename, passing the *classified category*
+                        // Optional descriptive filename
                         if (_settings.EnableDescriptiveFilenames && confirmFilename != null)
                         {
-                            progress?.Report($"📝 Generating descriptive filename for '{fileInfo.Name}' ({category})...");
-                            string suggestedFilename = await GenerateFilenameAsync(text, fileInfo.Name, category, cancellationToken).ConfigureAwait(false); // Pass category
-
-                            // Call the external handler to get the final desired filename from the user
-                            finalFilenameBase = await confirmFilename(
-                                Path.GetFileNameWithoutExtension(fileInfo.Name),
-                                suggestedFilename,
-                                progress);
-
-                            // Basic validation for the returned filename
+                            progress?.Report($"📝 Generating filename for '{fi.Name}' → {category}");
+                            string suggestion = await GenerateFilenameAsync(text, fi.Name, category, cancellationToken)
+                                                      .ConfigureAwait(false);
+                            finalFilenameBase = await confirmFilename(finalFilenameBase, suggestion, progress);
                             finalFilenameBase = SanitizeFilename(finalFilenameBase);
                             if (string.IsNullOrWhiteSpace(finalFilenameBase))
-                            {
-                                // If the handler returned an invalid name, revert to original
-                                finalFilenameBase = Path.GetFileNameWithoutExtension(fileInfo.Name);
-                                progress?.Report($"⚠️ Invalid name chosen. Reverting to original name for '{fileInfo.Name}'.");
-                            }
+                                finalFilenameBase = Path.GetFileNameWithoutExtension(fi.Name);
                         }
                     }
                     else
                     {
-                        _logger.LogWarning("Geen tekst geëxtraheerd uit {File}. Classificatie naar fallback.", fileInfo.FullName);
-                        progress?.Report($"⚠️ Geen tekst geëxtraheerd uit '{fileInfo.Name}'. Gaat naar '{_settings.FallbackCategory}'.");
+                        _logger.LogWarning("Geen tekst gevonden in {File}.", fi.FullName);
                     }
 
                     targetLabel = _settings.Categories.TryGetValue(category, out var mapped)
@@ -140,34 +130,28 @@ namespace AI_bestandsorganizer
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Classificatie/naamgeneratie mislukt voor {File}", fileInfo.FullName);
-                    progress?.Report($"❌ Fout bij verwerken van {fileInfo.Name}: {ex.Message}. Gaat naar '{_settings.FallbackCategory}'.");
-                    // Continue to move with original name if classification/name gen failed
-                    // category and targetLabel will remain fallback values
+                    _logger.LogError(ex, "Classificatie/naamgeneratie mislukt voor {File}", fi.FullName);
+                    progress?.Report($"❌ Fout bij verwerken van {fi.Name}: {ex.Message}");
                 }
 
                 string targetDir = Path.Combine(dstDir, targetLabel);
                 Directory.CreateDirectory(targetDir);
 
-                // Use the finalFilenameBase for the destination path
-                string dest = Path.Combine(targetDir, finalFilenameBase + fileInfo.Extension);
+                string dest = Path.Combine(targetDir, finalFilenameBase + fi.Extension);
                 int c = 1;
                 while (File.Exists(dest))
-                {
-                    // If a file with the same new name exists, append a number
-                    dest = Path.Combine(targetDir, $"{finalFilenameBase}_{c++}{fileInfo.Extension}");
-                }
+                    dest = Path.Combine(targetDir, $"{finalFilenameBase}_{c++}{fi.Extension}");
 
                 try
                 {
-                    fileInfo.MoveTo(dest);
+                    fi.MoveTo(dest);
                     moved++;
-                    progress?.Report($"✅ {fileInfo.Name} → {Path.GetFileName(dest)} (naar {targetLabel})");
+                    progress?.Report($"✅ {fi.Name} → {Path.GetFileName(dest)}  (→ {targetLabel})");
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Verplaatsen mislukt voor {File}", fileInfo.FullName);
-                    progress?.Report($"❌ Fout bij verplaatsen van {fileInfo.Name}: {ex.Message}");
+                    _logger.LogError(ex, "Verplaatsen mislukt voor {File}", fi.FullName);
+                    progress?.Report($"❌ Kon {fi.Name} niet verplaatsen: {ex.Message}");
                 }
             }
 
@@ -175,170 +159,111 @@ namespace AI_bestandsorganizer
             return (processed, moved);
         }
 
-        // ---------------- GEMINI ----------------
+        #region ――――――――――――  GEMINI  ――――――――――――――――――――――――――――――――
         private async Task<string> ClassifyAsync(string text, CancellationToken ct)
         {
-            string catList = string.Join('\n', _settings.Categories.Keys.Select(k => k.Trim()));
-
+            // 1) Prompt Gemini
+            string catList = string.Join(" | ", _settings.Categories.Keys);
             string prompt =
-                $"Classificeer dit document in ÉÉN van de volgende categorieën:\n" +
-                $"{catList}\n" +
-                $"Als het document in geen van deze categorieën past, antwoord dan ' {_settings.FallbackCategory} '.\n" +
-                $"BELANGRIJK: Antwoord ALLEEN met de naam van de categorie, zonder extra tekst, cijfers, punten of uitleg. Bijvoorbeeld: 'Financiën' of 'Gezondheid en Medisch'.\n\n" +
-                "Documentinhoud:\n" +
+                "Je krijgt documenttekst en retourneert *exact* één van deze labels (case‑insensitive):\n" +
+                catList + "\n" +
+                "Antwoord enkel het label, zonder punt, nummering of extra woorden." +
+                "\n\nDOCUMENT:\n" +
                 text[..Math.Min(text.Length, _settings.MaxPromptChars)];
 
-            _logger.LogDebug("Classify Prompt voor AI:\n{Prompt}", prompt);
+            _logger.LogDebug("Classify‑prompt →\n{Prompt}", prompt);
 
             var model = _google.GenerativeModel(_settings.ModelName);
-            string? ans = null;
+            string? aiAns = null;
             try
             {
-                var result = await model.GenerateContent(prompt, cancellationToken: ct);
-                ans = result.Text?.Trim();
+                var res = await model.GenerateContent(prompt, cancellationToken: ct);
+                aiAns = res.Text?.Trim();
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Fout bij aanroepen van Gemini API voor classificatie.");
+                _logger.LogError(ex, "Gemini classificatie mislukt.");
             }
 
-            _logger.LogDebug("Ruwe AI-antwoord (classificatie): '{Ans}'", ans);
-
-            if (string.IsNullOrEmpty(ans))
+            // 2) Normaliseer & match
+            if (!string.IsNullOrWhiteSpace(aiAns))
             {
-                _logger.LogWarning("AI gaf geen antwoord voor classificatie. Terugval naar '{Fallback}'.", _settings.FallbackCategory);
-                return _settings.FallbackCategory;
+                string norm = Normalize(aiAns);
+                string? match = _settings.Categories.Keys.FirstOrDefault(k => Normalize(k) == norm);
+                if (match != null)
+                {
+                    _logger.LogInformation("AI → '{AiAns}' ⇒ '{Match}'", aiAns, match);
+                    return match;
+                }
             }
 
-            // Normalize AI's response for matching
-            string normalizedAns = ans.Trim();
-            normalizedAns = Regex.Replace(normalizedAns, @"^(Category:\s*|Categorie:\s*|\[|\]|\.|\d+\.\s*)", "", RegexOptions.IgnoreCase);
-            normalizedAns = Regex.Replace(normalizedAns, @"(\.|\d+\.\s*)$", "");
-            normalizedAns = normalizedAns.Trim();
-
-            // Attempt to find a case-insensitive match for the normalized answer in the category keys
-            string? matchedCategory = _settings.Categories.Keys
-                .FirstOrDefault(key => string.Equals(key, normalizedAns, StringComparison.OrdinalIgnoreCase));
-
-            if (matchedCategory != null)
+            // 3) Keyword‑heuristiek
+            foreach (var (regex, cat) in _keywordMap)
             {
-                _logger.LogInformation("AI geclassificeerd als '{MatchedCategory}' (genormaliseerd van '{OriginalAns}').", matchedCategory, ans);
-                return matchedCategory; // Return the *exact* key from your settings
+                if (regex.IsMatch(text))
+                {
+                    _logger.LogInformation("Heuristiek trof '{Cat}'", cat);
+                    return cat;
+                }
             }
-            else
-            {
-                _logger.LogWarning("AI-antwoord '{OriginalAns}' kon niet worden gemapt op een bekende categorie. Genormaliseerd naar '{NormalizedAns}'. Terugval naar '{Fallback}'.", ans, normalizedAns, _settings.FallbackCategory);
-                return _settings.FallbackCategory;
-            }
+
+            _logger.LogWarning("Geen match – fallback {Fallback}", _settings.FallbackCategory);
+            return _settings.FallbackCategory;
         }
 
-        // UPDATED: Method to generate a descriptive filename using Gemini, now accepts category
         private async Task<string> GenerateFilenameAsync(string text, string originalFilename, string category, CancellationToken ct)
         {
-            // Use MaxPromptChars for filename generation, providing full context
-            string relevantText = text[..Math.Min(text.Length, _settings.MaxPromptChars)];
-
+            string relevant = text[..Math.Min(text.Length, _settings.MaxPromptChars)];
             string prompt =
-                "Suggest a highly descriptive, concise, and human-readable filename (without extension) for the following document content.\n" +
-                $"The document has been classified into the category: '{category}'. Use this as context.\n" +
-                "Focus on the core topic, relevant dates (e.g., YYYY-MM-DD or YYYYMMDD if present), and key entities (e.g., company names, project names).\n" +
-                "Avoid generic terms like 'document', 'scan', 'report' unless they are part of a specific, meaningful title within the content.\n" +
-                "The original filename was '{originalFilename}'.\n" +
-                "Ensure the name is suitable for file paths (no invalid characters like \\ / : * ? \" < > |), keep it under 60 characters, and use underscores or hyphens for spaces.\n" +
-                "BELANGRIJK: Antwoord ALLEEN met de voorgestelde bestandsnaam, zonder extra tekst of uitleg.\n\n" +
-                "Documentinhoud:\n" +
-                relevantText;
-
-            _logger.LogDebug("Filename Prompt voor AI:\n{Prompt}", prompt);
+                "Generate a short, descriptive filename (no extension) for this document. " +
+                $"Category: '{category}'. Use dates YYYY‑MM‑DD if present. " +
+                "Avoid invalid path characters. Respond *only* with the name.\n\n" +
+                relevant;
 
             var model = _google.GenerativeModel(_settings.ModelName);
             string? ans = null;
             try
             {
-                var result = await model.GenerateContent(prompt, cancellationToken: ct);
-                ans = result.Text?.Trim();
+                var res = await model.GenerateContent(prompt, cancellationToken: ct);
+                ans = res.Text?.Trim();
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Fout bij aanroepen van Gemini API voor bestandsnaam generatie.");
+                _logger.LogError(ex, "Gemini filename‑gen mislukt.");
             }
 
-            _logger.LogDebug("Ruwe AI-antwoord (bestandsnaam): '{Ans}'", ans);
-
-            if (string.IsNullOrEmpty(ans))
-            {
-                _logger.LogWarning("AI failed to suggest a filename for {OriginalFile}. Falling back to original base name.", originalFilename);
-                return Path.GetFileNameWithoutExtension(originalFilename); // Fallback to original base name
-            }
-
-            // Sanitize the AI's suggestion
-            string sanitizedAns = SanitizeFilename(ans);
-            _logger.LogDebug("Gesaneerde bestandsnaam: '{SanitizedAns}'", sanitizedAns);
-            return string.IsNullOrEmpty(sanitizedAns) ? Path.GetFileNameWithoutExtension(originalFilename) : sanitizedAns;
+            return string.IsNullOrWhiteSpace(ans)
+                   ? Path.GetFileNameWithoutExtension(originalFilename)
+                   : SanitizeFilename(ans);
         }
+        #endregion
 
-        public static string SanitizeFilename(string filename)
-        {
-            if (string.IsNullOrWhiteSpace(filename)) return string.Empty;
-
-            char[] invalidChars = Path.GetInvalidFileNameChars()
-                                  .Concat(Path.GetInvalidPathChars())
-                                  .Distinct()
-                                  .ToArray();
-
-            string sanitized = new string(filename.Select(c => invalidChars.Contains(c) ? '_' : c).ToArray());
-
-            sanitized = sanitized.Trim()
-                                 .Replace(" ", "_")
-                                 .Replace("__", "_")
-                                 .Replace("__", "_");
-
-            if (sanitized.StartsWith("_")) sanitized = sanitized.Substring(1);
-            if (sanitized.EndsWith("_")) sanitized = sanitized.Substring(0, sanitized.Length - 1);
-
-            if (sanitized.Length > 100)
-            {
-                sanitized = sanitized.Substring(0, 100);
-                if (sanitized.EndsWith("_")) sanitized = sanitized.Substring(0, sanitized.Length - 1);
-            }
-
-            return sanitized;
-        }
-
-        // ---------------- TEXT EXTRACT ----------------
-        private async Task<string> ExtractTextAsync(FileInfo fi) // Changed to non-static to use _logger
+        #region ――――――――――――  TEXT EXTRACTION  ――――――――――――――――――――――――――
+        private async Task<string> ExtractTextAsync(FileInfo fi)
         {
             string ext = fi.Extension.ToLowerInvariant();
             if (ext is ".txt" or ".md")
             {
-                try
-                {
-                    return await File.ReadAllTextAsync(fi.FullName).ConfigureAwait(false);
-                }
+                try { return await File.ReadAllTextAsync(fi.FullName, Encoding.UTF8); }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Fout bij lezen van tekstbestand {File}", fi.Name);
+                    _logger.LogError(ex, "Lezen TXT mislukt: {File}", fi.Name);
                     return string.Empty;
                 }
             }
 
             if (ext == ".docx")
             {
-                var sb = new StringBuilder();
                 try
                 {
                     using var doc = WordprocessingDocument.Open(fi.FullName, false);
-                    if (doc.MainDocumentPart?.Document?.Body != null)
-                    {
-                        foreach (WordText t in doc.MainDocumentPart.Document.Body.Descendants<WordText>())
-                            sb.Append(t.Text).Append(' ');
-                    }
+                    return doc.MainDocumentPart?.Document?.Body?.InnerText ?? string.Empty;
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Fout bij extraheren van tekst uit DOCX {File}", fi.Name);
+                    _logger.LogError(ex, "DOCX extractie mislukt: {File}", fi.Name);
+                    return string.Empty;
                 }
-                return sb.ToString();
             }
 
             if (ext == ".pdf")
@@ -346,18 +271,67 @@ namespace AI_bestandsorganizer
                 var sb = new StringBuilder();
                 try
                 {
-                    using PdfDocument pdf = PdfDocument.Open(fi.FullName);
-                    foreach (PdfPage p in pdf.GetPages())
-                        sb.Append(p.Text).Append(' ');
+                    using var pdf = PdfDocument.Open(fi.FullName);
+                    foreach (PdfPage p in pdf.GetPages()) sb.Append(p.Text).Append(' ');
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Fout bij extraheren van tekst uit PDF {File}", fi.Name);
+                    _logger.LogError(ex, "PDF extractie mislukt: {File}", fi.Name);
+                }
+
+                // OCR fallback (optional)
+                if (sb.Length < 30 && _settings.EnableDescriptiveFilenames)
+                {
+                    try { sb.Append(await OcrHelper.RunAsync(fi.FullName)); }
+                    catch (Exception ex) { _logger.LogError(ex, "OCR mislukt voor {File}", fi.Name); }
                 }
                 return sb.ToString();
             }
 
             return string.Empty;
         }
+        #endregion
+
+        #region ――――――――――――  HELPERS  ――――――――――――――――――――――――――――――――――――
+        private static string Normalize(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return string.Empty;
+
+            // Strip accents
+            string formD = s.Normalize(NormalizationForm.FormD);
+            var sb = new StringBuilder(formD.Length);
+            foreach (var ch in formD)
+                if (CharUnicodeInfo.GetUnicodeCategory(ch) != UnicodeCategory.NonSpacingMark)
+                    sb.Append(ch);
+            string noDiacritics = sb.ToString();
+
+            // Keep only letters/numbers
+            return Regex.Replace(noDiacritics, "[^A-Za-z0-9]", "", RegexOptions.IgnoreCase)
+                         .ToLowerInvariant();
+        }
+
+        public static string SanitizeFilename(string filename)
+        {
+            if (string.IsNullOrWhiteSpace(filename)) return string.Empty;
+
+            char[] invalid = Path.GetInvalidFileNameChars().Concat(Path.GetInvalidPathChars()).Distinct().ToArray();
+            string cleaned = new string(filename.Select(c => invalid.Contains(c) ? '_' : c).ToArray());
+            cleaned = MyRegex().Replace(cleaned, "_");
+            cleaned = Regex.Replace(cleaned, "_+", "_");
+            if (cleaned.Length > 100) cleaned = cleaned[..100];
+            return cleaned.Trim('_');
+        }
+
+        [GeneratedRegex("[\\s]+")]
+        private static partial Regex MyRegex();
+        #endregion
+    }
+
+    //---------------------------------------------------------------------
+    //  Simple OCR helper (placeholder) – plug your favourite engine here
+    //---------------------------------------------------------------------
+    internal static class OcrHelper
+    {
+        public static Task<string> RunAsync(string file) => Task.FromResult(string.Empty); // TODO implement
     }
 }
