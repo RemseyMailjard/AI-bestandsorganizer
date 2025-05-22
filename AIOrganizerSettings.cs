@@ -51,8 +51,7 @@ namespace AI_bestandsorganizer
         // AIOrganizerSettings.cs
         // ... (existing properties)
         public bool EnableAISuggestedFolders { get; set; } = false;
-        public string AISuggestedFoldersSystemPrompt { get; set; } = "You are an assistant that suggests hierarchical folder structures. Based on the document's content, its main category, and the base path for that category, suggest a concise and logical relative subfolder structure (e.g., YYYY/MM or specific_project_name). Keep it 1-3 levels deep at most. Respond ONLY with the relative subfolder path (e.g., '2023/Q4' or 'Project_Alpha/Invoices'). If no further specific subfolder makes sense, respond with an empty string.";
-        // ...
+        public string AISuggestedFoldersSystemPrompt { get; set; } = "You are an assistant that suggests logical, hierarchical folder structures for organizing documents. Based on the document's content and its general theme/category (provided as a reference), suggest a complete, concise, and descriptive relative folder path. Use '/' as a separator for subfolders. Aim for 1-3 levels deep. Respond ONLY with the full suggested relative folder path (e.g., 'Financien/Bank/2024/ING', 'Project_Alpha/Facturen/Uitgaand', 'Vakanties/Italie_2023/Fotos'). If the document is very generic, you might suggest a path like 'Algemeen/{DocumentJaar}' or just the main category name if no further nesting is logical.";
 
 
         // Categorization Configuration

@@ -23,15 +23,11 @@ using System.Threading.Tasks;
 using DocumentFormat.OpenXml.Packaging;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using Mscc.GenerativeAI;                         // Google Gemini
+using Mscc.GenerativeAI;  // Google Gemini
 using Azure;
 using Azure.AI.OpenAI;
 using OpenAI.Chat;
 using static AI_bestandsorganizer.FileUtils;
-
-// Azure OpenAI Client
-// Note: The using OpenAI; and using OpenAI.Chat; aliases were potentially problematic
-// if you also used the official OpenAI SDK. Direct usage of Azure.AI.OpenAI types is clearer.
 
 namespace AI_bestandsorganizer
 {
@@ -45,18 +41,6 @@ namespace AI_bestandsorganizer
                                                                IProgress<string>? progress);
 
 
-    //──────────────────────────────────── Metadata Class (ensure this is defined) ───────────────────
-    public class FileMetadata
-    {
-        public string? OriginalFullPath { get; set; }
-        public string? OriginalFilename { get; set; }
-        public DateTime ProcessedTimestampUtc { get; set; }
-        public string? DetectedCategoryKey { get; set; }      // The KEY from AIOrganizerSettings.Categories
-        public string? TargetFolderRelativePath { get; set; } // The VALUE from AIOrganizerSettings.Categories
-        public string? AISuggestedFilename { get; set; }
-        public string? FinalFilename { get; set; }
-        public string? ExtractedTextPreview { get; set; }
-    }
 
     //──────────────────────────────────── Organizer ────────────────────────
     public class AIFileOrganizer
@@ -272,11 +256,11 @@ namespace AI_bestandsorganizer
 
 
         public async Task<(int processed, int moved)> OrganizeAsync(
-           string srcDir, string dstDir,
-           FilenameConfirmationHandler? confirmFilename = null,
-           FolderPathConfirmationHandler? confirmFolderPath = null, // New parameter
-           IProgress<string>? progress = null,
-           CancellationToken ct = default)
+          string srcDir, string dstDir,
+          FilenameConfirmationHandler? confirmFilename = null,
+          FolderPathConfirmationHandler? confirmFolderPath = null,
+          IProgress<string>? progress = null,
+          CancellationToken ct = default)
         {
             srcDir = Path.GetFullPath(srcDir);
             dstDir = Path.GetFullPath(dstDir);
@@ -303,7 +287,7 @@ namespace AI_bestandsorganizer
             {
                 _log.LogError(ex, $"Fout bij het ophalen van bestanden uit bronmap: {srcDir}");
                 progress?.Report($"❌ Fout bij toegang tot bronmap: {ex.Message}");
-                return (0, 0);
+                return (0, 0); // Early exit
             }
 
             progress?.Report($"ℹ️ {filesToProcess.Count} bestanden gevonden in bronmap.");
@@ -311,7 +295,7 @@ namespace AI_bestandsorganizer
             {
                 progress?.Report("🏁 Geen bestanden gevonden om te verwerken.");
                 _log.LogInformation("Geen bestanden gevonden in bronmap om te verwerken.");
-                return (0, 0);
+                return (0, 0); // Early exit
             }
 
             foreach (var fi in filesToProcess)
@@ -322,7 +306,7 @@ namespace AI_bestandsorganizer
                 {
                     progress?.Report($"⏭️ Overslaan (extensie niet ondersteund): {fi.Name}");
                     _log.LogDebug($"Overslaan (extensie niet ondersteund): {fi.FullName}");
-                    continue;
+                    continue; // Next file
                 }
 
                 proc++;
@@ -332,7 +316,7 @@ namespace AI_bestandsorganizer
                 string categoryKey = _cfg.FallbackCategory;
                 string originalBaseName = Path.GetFileNameWithoutExtension(fi.Name);
                 string currentBaseName = originalBaseName;
-                string? aiSuggestedFilename = null;
+                string? aiSuggestedFilenameForMetadata = null; // AI's raw suggestion for filename
                 string extractedText = string.Empty;
                 string predefinedTargetRelativePath;
 
@@ -353,30 +337,30 @@ namespace AI_bestandsorganizer
 
                         if (_cfg.EnableFileRenaming && _cfg.EnableDescriptiveFilenames)
                         {
-                            string suggestion = await GenerateFilenameAsync(extractedText, fi.Name, categoryKey, ct);
-                            aiSuggestedFilename = FileUtils.SanitizeAsFilename(suggestion);
+                            string rawAiFilenameSuggestion = await GenerateFilenameAsync(extractedText, fi.Name, categoryKey, ct);
+                            aiSuggestedFilenameForMetadata = FileUtils.SanitizeAsFilename(rawAiFilenameSuggestion);
 
                             if (confirmFilename != null)
                             {
-                                string sanitizedOriginalBase = FileUtils.SanitizeAsFilename(currentBaseName);
-                                currentBaseName = await confirmFilename(sanitizedOriginalBase, aiSuggestedFilename, progress);
+                                string sanitizedOriginalBase = FileUtils.SanitizeAsFilename(originalBaseName);
+                                currentBaseName = await confirmFilename(sanitizedOriginalBase, aiSuggestedFilenameForMetadata, progress);
                                 currentBaseName = FileUtils.SanitizeAsFilename(currentBaseName);
                             }
                             else
                             {
-                                currentBaseName = aiSuggestedFilename;
+                                currentBaseName = aiSuggestedFilenameForMetadata;
                             }
                         }
                         else
                         {
-                            currentBaseName = FileUtils.SanitizeAsFilename(currentBaseName);
+                            currentBaseName = FileUtils.SanitizeAsFilename(originalBaseName);
                         }
                     }
-                    else // No text extracted
+                    else
                     {
-                        _log.LogWarning($"Geen tekst geëxtraheerd uit {fi.Name}. Gebruik fallback categorie KEY: '{categoryKey}'.");
-                        progress?.Report($"⚠️ Geen tekst uit {fi.Name}, gebruik fallback: {categoryKey}");
-                        currentBaseName = FileUtils.SanitizeAsFilename(currentBaseName);
+                        _log.LogWarning($"Geen tekst geëxtraheerd uit {fi.Name}. Gebruik fallback categorie KEY: '{_cfg.FallbackCategory}'.");
+                        progress?.Report($"⚠️ Geen tekst uit {fi.Name}, gebruik fallback: {_cfg.FallbackCategory}");
+                        currentBaseName = FileUtils.SanitizeAsFilename(originalBaseName);
                         predefinedTargetRelativePath = _cfg.Categories.TryGetValue(_cfg.FallbackCategory, out var fallbackMappedPath)
                                                        ? fallbackMappedPath
                                                        : FileUtils.SanitizePathPart(_cfg.FallbackCategory);
@@ -385,7 +369,7 @@ namespace AI_bestandsorganizer
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)
                 {
-                    _log.LogError(ex, $"Fout tijdens verwerken van {fi.Name}.");
+                    _log.LogError(ex, $"Fout tijdens extractie/classificatie/naamgeving van {fi.Name}.");
                     progress?.Report($"❌ Fout bij {fi.Name}: {ex.Message.Split('\n')[0]}. Gebruik fallback.");
                     categoryKey = _cfg.FallbackCategory;
                     currentBaseName = FileUtils.SanitizeAsFilename(originalBaseName);
@@ -394,47 +378,49 @@ namespace AI_bestandsorganizer
                                                    : FileUtils.SanitizePathPart(_cfg.FallbackCategory);
                 }
 
-                string finalTargetRelativePath = predefinedTargetRelativePath; // Default to predefined
+                string finalTargetRelativePath = predefinedTargetRelativePath; // Initialize with (unsanitized) predefined
 
                 if (_cfg.EnableAISuggestedFolders && !string.IsNullOrWhiteSpace(extractedText))
                 {
-                    _log.LogInformation($"AI-suggestie voor mappenstructuur is ingeschakeld voor {fi.Name}.");
-                    string aiSuggestedSubPath = await GenerateFolderPathAsync(extractedText, categoryKey, predefinedTargetRelativePath, ct);
+                    _log.LogInformation($"AI-suggestie voor volledige mappenstructuur is ingeschakeld voor {fi.Name}.");
+                    string sanitizedPredefinedPathForHint = FileUtils.SanitizePathStructure(predefinedTargetRelativePath);
+                    string aiSuggestedFullPathRaw = await GenerateFolderPathAsync(extractedText, categoryKey, sanitizedPredefinedPathForHint, ct);
+                    string aiSuggestedFullPathSanitized = string.Empty;
 
-                    string sanitizedPredefinedPath = FileUtils.SanitizePathStructure(predefinedTargetRelativePath);
-                    string combinedAiSuggestedPath = sanitizedPredefinedPath; // Default if subpath is empty
-
-                    if (!string.IsNullOrWhiteSpace(aiSuggestedSubPath) && aiSuggestedSubPath != "_")
+                    if (!string.IsNullOrWhiteSpace(aiSuggestedFullPathRaw))
                     {
-                        combinedAiSuggestedPath = Path.Combine(sanitizedPredefinedPath, aiSuggestedSubPath);
+                        aiSuggestedFullPathSanitized = FileUtils.SanitizePathStructure(aiSuggestedFullPathRaw);
                     }
-
-                    string sanitizedAiCombinedPath = FileUtils.SanitizePathStructure(combinedAiSuggestedPath);
 
                     if (confirmFolderPath != null)
                     {
-                        _log.LogDebug($"AI-gesuggereerde map: '{sanitizedAiCombinedPath}', Vooraf gedefinieerde map: '{sanitizedPredefinedPath}'. Wachten op bevestiging.");
-                        finalTargetRelativePath = await confirmFolderPath(sanitizedPredefinedPath, sanitizedAiCombinedPath, progress);
+                        string suggestionForDialog = !string.IsNullOrWhiteSpace(aiSuggestedFullPathSanitized) ? aiSuggestedFullPathSanitized : sanitizedPredefinedPathForHint;
+                        _log.LogDebug($"Vooraf gedefinieerd pad (hint): '{sanitizedPredefinedPathForHint}', AI-gesuggereerd volledig pad: '{aiSuggestedFullPathSanitized}'. Wachten op bevestiging.");
+
+                        finalTargetRelativePath = await confirmFolderPath(sanitizedPredefinedPathForHint, suggestionForDialog, progress);
+                        // User's choice from dialog is already sanitized by FolderPathInputDialog's ProcessAndClose
+                        // But, to be absolutely sure, we can sanitize again.
+                        finalTargetRelativePath = FileUtils.SanitizePathStructure(finalTargetRelativePath);
+
                         _log.LogInformation($"Gebruiker koos doelmap: '{finalTargetRelativePath}' voor {fi.Name}.");
                     }
                     else
                     {
-                        finalTargetRelativePath = sanitizedAiCombinedPath;
-                        _log.LogInformation($"Automatisch toegepaste AI-doelmap: '{finalTargetRelativePath}' voor {fi.Name}.");
+                        finalTargetRelativePath = !string.IsNullOrWhiteSpace(aiSuggestedFullPathSanitized) ? aiSuggestedFullPathSanitized : sanitizedPredefinedPathForHint;
+                        _log.LogInformation($"Automatisch toegepaste doelmap: '{finalTargetRelativePath}' voor {fi.Name}.");
                     }
                 }
-                else // AI Folders not enabled OR no text extracted (so cannot ask AI)
+                else
                 {
                     if (_cfg.EnableAISuggestedFolders && string.IsNullOrWhiteSpace(extractedText))
                     {
-                        _log.LogWarning($"AI-suggestie voor mappenstructuur is ingeschakeld, maar geen tekst geëxtraheerd uit {fi.Name}. Gebruikt vooraf gedefinieerde map '{predefinedTargetRelativePath}'.");
+                        _log.LogWarning($"AI-suggestie voor mappenstructuur ingeschakeld, maar geen tekst uit {fi.Name}. Gebruikt: '{predefinedTargetRelativePath}'.");
                     }
                     finalTargetRelativePath = FileUtils.SanitizePathStructure(predefinedTargetRelativePath);
                 }
 
                 string targetDirectory = Path.Combine(dstDir, finalTargetRelativePath);
-                // ... (CreateDirectory, resolve filename conflicts, MoveTo, GenerateMetadataFileAsync) ...
-                // Make sure GenerateMetadataFileAsync uses finalTargetRelativePath
+                _log.LogDebug($"Doelmap voor {fi.Name} wordt: '{targetDirectory}'.");
 
                 try
                 {
@@ -443,371 +429,388 @@ namespace AI_bestandsorganizer
                 catch (Exception ex)
                 {
                     _log.LogError(ex, $"Kan doelmap niet aanmaken: {targetDirectory}. Bestand {fi.Name} wordt overgeslagen.");
-                    progress?.Report($"❌ Kan map niet aanmaken: {finalTargetRelativePath}. Overslaan {fi.Name}.");
+                    progress?.Report($"❌ Kan map niet aanmaken: '{targetDirectory}'. Overslaan {fi.Name}.");
                     continue;
                 }
 
-                string finalFullFilename = Path.Combine(targetDirectory, currentBaseName + fi.Extension);
-                int n = 1;
-                string tempBaseName = currentBaseName;
+                string tempFilenameForConflict = currentBaseName; // Use the name determined by renaming logic
+                string finalFullFilename = Path.Combine(targetDirectory, tempFilenameForConflict + fi.Extension);
+                int conflictCounter = 1;
                 while (File.Exists(finalFullFilename))
                 {
-                    tempBaseName = $"{currentBaseName}_{n++}";
-                    finalFullFilename = Path.Combine(targetDirectory, tempBaseName + fi.Extension);
+                    tempFilenameForConflict = $"{currentBaseName}_{conflictCounter++}"; // Use original currentBaseName for numbering
+                    finalFullFilename = Path.Combine(targetDirectory, tempFilenameForConflict + fi.Extension);
                 }
-                if (n > 1) currentBaseName = tempBaseName; // Update currentBaseName if it was changed
+                // The actual final name on disk (if changed due to conflict)
+                string actualFinalBaseNameOnDisk = tempFilenameForConflict;
+
+                _log.LogDebug($"Definitieve bestandsnaam voor {fi.Name} wordt: '{Path.GetFileName(finalFullFilename)}'.");
 
                 try
                 {
                     fi.MoveTo(finalFullFilename);
                     movedCount++;
                     progress?.Report($"✅ {fi.Name} → {finalTargetRelativePath}{Path.DirectorySeparatorChar}{Path.GetFileName(finalFullFilename)}");
+                    _log.LogInformation($"Bestand {fi.Name} verplaatst naar {finalFullFilename}.");
 
                     if (_cfg.GenerateMetadataFiles)
                     {
-                        await GenerateMetadataFileAsync(fi, finalFullFilename, categoryKey, finalTargetRelativePath, /*AISuggestedFilename*/ aiSuggestedFilename, extractedText, progress, ct);
+                        // aiSuggestedFilenameForMetadata stores the AI's idea before user interaction or conflict numbering.
+                        // actualFinalBaseNameOnDisk + fi.Extension is what's actually on disk.
+                        await GenerateMetadataFileAsync(fi, finalFullFilename, categoryKey, finalTargetRelativePath,
+                                                        aiSuggestedFilenameForMetadata,
+                                                        extractedText, progress, ct);
                     }
                 }
-                catch(Exception e)
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
                 {
-
+                    _log.LogError(ex, $"Verplaatsen of metadata voor {fi.Name} naar {finalFullFilename} mislukt.");
+                    progress?.Report($"❌ Fout bij verplaatsen/metadata {fi.Name}: {ex.Message.Split('\n')[0]}");
                 }
-                // ... (catch blocks for MoveTo) ...
-            }
-            // ... (final report) ...
+            } // End of foreach loop
+
+            progress?.Report($"🏁 Klaar! {movedCount} van de {proc} verwerkte bestanden verplaatst.");
+            _log.LogInformation($"Organisatie voltooid. {movedCount}/{proc} bestanden verplaatst.");
             return (proc, movedCount);
         }
-
-        private async Task<string> GenerateFilenameAsync(string text, string originalFilename, string categoryKey, CancellationToken ct)
-        {
-            string originalBaseName = Path.GetFileNameWithoutExtension(originalFilename);
-            if (_geminiClient == null && _azureClient == null && _openAIHttpClient == null)
+    
+            private async Task<string> GenerateFilenameAsync(string text, string originalFilename, string categoryKey, CancellationToken ct)
             {
-                _log.LogWarning("Geen LLM provider geconfigureerd voor bestandsnaam generatie. Gebruik originele gesaneerde naam.");
-                return FileUtils.SanitizeAsFilename(originalBaseName);
-            }
-            // ... (rest of the method, ensure FileUtils.SanitizeAsFilename is used for the result and fallback)
-            string prompt = $"{_cfg.SystemPrompt}\n\nGegeven de volgende tekst en de categorie '{_cfg.Categories.GetValueOrDefault(categoryKey, categoryKey)}', " +
-                            $"stel een korte, beschrijvende, Engelse bestandsnaam voor (alleen letters, cijfers, underscores; geen spaties of speciale tekens; geen bestandsextensie). " +
-                            $"De originele bestandsnaam was '{originalBaseName}'. Focus op de kerninhoud en houd het beknopt (maximaal 5-7 woorden).\n\n" +
-                            $"Tekst:\n\"\"\"\n{text[..Math.Min(text.Length, _cfg.MaxPromptCharsFilename)]}\n\"\"\"";
-            string? ans = null; // ... LLM call ...
-            // ... (LLM call logic as before) ...
-            if (string.IsNullOrWhiteSpace(ans))
-            {
-                return FileUtils.SanitizeAsFilename(originalBaseName);
-            }
-            return FileUtils.SanitizeAsFilename(ans.Trim());
-        }
-
-        private async Task<string> GenerateFolderPathAsync(string text, string classifiedCategoryKey, string basePathForCategory, CancellationToken ct)
-        {
-            if (_geminiClient == null && _azureClient == null && _openAIHttpClient == null)
-            {
-                _log.LogWarning("Geen LLM provider geconfigureerd voor mappad generatie. Geeft lege subpad terug.");
-                return string.Empty;
+                string originalBaseName = Path.GetFileNameWithoutExtension(originalFilename);
+                if (_geminiClient == null && _azureClient == null && _openAIHttpClient == null)
+                {
+                    _log.LogWarning("Geen LLM provider geconfigureerd voor bestandsnaam generatie. Gebruik originele gesaneerde naam.");
+                    return FileUtils.SanitizeAsFilename(originalBaseName);
+                }
+                // ... (rest of the method, ensure FileUtils.SanitizeAsFilename is used for the result and fallback)
+                string prompt = $"{_cfg.SystemPrompt}\n\nGegeven de volgende tekst en de categorie '{_cfg.Categories.GetValueOrDefault(categoryKey, categoryKey)}', " +
+                                $"stel een korte, beschrijvende, Engelse bestandsnaam voor (alleen letters, cijfers, underscores; geen spaties of speciale tekens; geen bestandsextensie). " +
+                                $"De originele bestandsnaam was '{originalBaseName}'. Focus op de kerninhoud en houd het beknopt (maximaal 5-7 woorden).\n\n" +
+                                $"Tekst:\n\"\"\"\n{text[..Math.Min(text.Length, _cfg.MaxPromptCharsFilename)]}\n\"\"\"";
+                string? ans = null; // ... LLM call ...
+                                    // ... (LLM call logic as before) ...
+                if (string.IsNullOrWhiteSpace(ans))
+                {
+                    return FileUtils.SanitizeAsFilename(originalBaseName);
+                }
+                return FileUtils.SanitizeAsFilename(ans.Trim());
             }
 
-            string prompt = $"{_cfg.AISuggestedFoldersSystemPrompt}\n\n" +
-                            $"Document inhoud (fragment):\n\"\"\"\n{text[..Math.Min(text.Length, _cfg.MaxPromptCharsFilename)]}\n\"\"\"\n" +
-                            $"Hoofdcategorie: '{classifiedCategoryKey}' (Wat de AI als '{_cfg.Categories.GetValueOrDefault(classifiedCategoryKey, classifiedCategoryKey)}' kent)\n" +
-                            $"Basismap voor deze categorie: '{basePathForCategory}'\n" +
-                            $"Stel een aanvullend relatief subpad voor dat onder '{basePathForCategory}' kan worden geplaatst. " +
-                            $"Bijvoorbeeld, als de inhoud een factuur uit januari 2024 is, zou een goed subpad '2024/01_Januari' kunnen zijn. " +
-                            $"Antwoord ALLEEN met het voorgestelde subpad (gebruik / als scheidingsteken), of laat leeg als geen verdere specificatie zinvol is.";
-
-            _log.LogDebug($"Mappad generatie prompt (start): {prompt.Substring(0, Math.Min(prompt.Length, 300))}(...)");
-
-            string? ans = null;
-            try
+            private async Task<string> GenerateFolderPathAsync(string text, string classifiedCategoryKey, string predefinedBasePathHint, CancellationToken ct)
             {
-                ct.ThrowIfCancellationRequested();
+                if (_geminiClient == null && _azureClient == null && _openAIHttpClient == null)
+                {
+                    _log.LogWarning("Geen LLM provider geconfigureerd voor mappad generatie. Geeft lege pad terug.");
+                    return string.Empty;
+                }
+
+                // The classifiedCategoryKey and predefinedBasePathHint are now more for context/inspiration
+                // rather than strict prefixing by the AI.
+                string prompt = $"{_cfg.AISuggestedFoldersSystemPrompt}\n\n" +
+                                $"Document inhoud (fragment):\n\"\"\"\n{text[..Math.Min(text.Length, _cfg.MaxPromptCharsFilename)]}\n\"\"\"\n" +
+                                $"Algemene categorie (ter referentie): '{classifiedCategoryKey}' (bekend als '{_cfg.Categories.GetValueOrDefault(classifiedCategoryKey, classifiedCategoryKey)}')\n" +
+                                $"Vooraf gedefinieerd pad voor deze categorie (ter inspiratie, niet als verplicht prefix): '{predefinedBasePathHint}'\n" +
+                                $"Stel een volledig, logisch en beschrijvend relatief mappad voor om dit document op te slaan. Het pad hoeft niet te beginnen met de bovenstaande referenties, maar mag dat wel als het zinvol is. Gebruik '/' als scheidingsteken.";
+
+                _log.LogDebug($"Mappad generatie prompt (start): {prompt.Substring(0, Math.Min(prompt.Length, 300))}(...)");
+
+                string? ans = null;
+                // ... (LLM call logic as before, ensuring the correct system prompt is used if needed by AskAzureAsync/AskOpenAIAsync) ...
                 ans = _cfg.Provider switch
                 {
                     LlmProvider.Gemini => await AskGeminiAsync(prompt, ct),
-                    LlmProvider.AzureOpenAI => await AskAzureAsync(_azureClient, _cfg.AzureDeployment, prompt, _cfg.AISuggestedFoldersSystemPrompt, ct), // Pass specific system prompt
-                    LlmProvider.OpenAI => await AskOpenAiAsync(prompt, ct), // OpenAI needs SystemPrompt inside message array
+                    LlmProvider.AzureOpenAI => await AskAzureAsync(_azureClient, _cfg.AzureDeployment, prompt, _cfg.AISuggestedFoldersSystemPrompt, ct),
+                    LlmProvider.OpenAI => await AskOpenAiAsync(prompt, ct), // Might need system prompt override here
                     _ => null
                 };
-            }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex)
-            {
-                _log.LogError(ex, $"Fout tijdens LLM API call voor mappad generatie (Provider: {_cfg.Provider}).");
-            }
 
-            if (string.IsNullOrWhiteSpace(ans))
-            {
-                _log.LogWarning("LLM gaf geen antwoord of een leeg antwoord voor mappad generatie. Geen subpad voorgesteld.");
-                return string.Empty;
-            }
 
-            _log.LogDebug($"LLM antwoord voor mappad (ruw): '{ans}'");
-            string sanitizedSubPath = FileUtils.SanitizePathStructure(ans.Trim());
-            _log.LogInformation($"Gesaneerd AI subpad suggestie: '{sanitizedSubPath}'.");
-            return (sanitizedSubPath == "_" || sanitizedSubPath == FileUtils.SanitizePathPart("")) ? string.Empty : sanitizedSubPath;
-        }
-
-        private async Task GenerateMetadataFileAsync(
-            FileInfo originalFile, // Original FileInfo
-            string newFullFilePath, // Full path of the moved file
-            string detectedCategoryKey, // The KEY AI identified (e.g., "Bankafschriften")
-            string targetFolderRelativePath, // The VALUE from Categories (e.g., "1. Financiën/1.01. Bankafschriften")
-            string? aiSuggestedFilename,
-            string extractedText,
-            IProgress<string>? progress,
-            CancellationToken ct)
-        {
-            var metadata = new FileMetadata
-            {
-                OriginalFullPath = originalFile.FullName,
-                OriginalFilename = originalFile.Name,
-                ProcessedTimestampUtc = DateTime.UtcNow,
-                DetectedCategoryKey = detectedCategoryKey,
-                TargetFolderRelativePath = targetFolderRelativePath,
-                AISuggestedFilename = aiSuggestedFilename,
-                FinalFilename = Path.GetFileName(newFullFilePath),
-                ExtractedTextPreview = extractedText.Length > _cfg.MetadataExtractedTextPreviewLength
-                                       ? extractedText.Substring(0, _cfg.MetadataExtractedTextPreviewLength) + "..."
-                                       : extractedText
-            };
-
-            string metadataPath = Path.ChangeExtension(newFullFilePath, ".metadata.json");
-            _log.LogDebug($"Genereren metadata bestand: {metadataPath}");
-
-            try
-            {
-                ct.ThrowIfCancellationRequested();
-                string json = JsonSerializer.Serialize(metadata, new JsonSerializerOptions { WriteIndented = true });
-                await File.WriteAllTextAsync(metadataPath, json, ct);
-                progress?.Report($"Ⓜ️ Metadata voor {Path.GetFileName(newFullFilePath)}");
-            }
-            catch (OperationCanceledException)
-            {
-                _log.LogWarning($"Metadata generatie geannuleerd voor {Path.GetFileName(newFullFilePath)}.");
-                progress?.Report($"⚠️ Metadata generatie geannuleerd voor {Path.GetFileName(newFullFilePath)}");
-                // Optionally delete partially written file if that's a concern
-            }
-            catch (Exception ex)
-            {
-                _log.LogError(ex, $"Schrijven metadata voor {originalFile.Name} naar {metadataPath} mislukt.");
-                progress?.Report($"❌ Fout bij metadata voor {Path.GetFileName(newFullFilePath)}");
-            }
-        }
-
-        private async Task<string> ClassifyAsync(string text, CancellationToken ct)
-        {
-            if (_geminiClient == null && _azureClient == null && _openAIHttpClient == null)
-            {
-                _log.LogWarning("Geen LLM provider geconfigureerd voor classificatie. Gebruik heuristiek.");
-                return Heuristic(text);
-            }
-
-            if (_cfg.Categories == null || !_cfg.Categories.Any())
-            {
-                _log.LogWarning("Categorieënlijst is leeg in configuratie. Gebruik fallback categorie KEY.");
-                return _cfg.FallbackCategory;
-            }
-
-            string catKeysList = string.Join(" | ", _cfg.Categories.Keys);
-            string prompt = $"{_cfg.SystemPrompt}\n\nAnalyseer de volgende tekst en classificeer deze in EXACT EEN van de volgende categorieën. " +
-                            $"Antwoord ALLEEN met de exacte categorienaam uit de verstrekte lijst.\n" +
-                            $"Beschikbare categorieën: {catKeysList}\n\n" +
-                            $"Tekst om te classificeren:\n\"\"\"\n{text[..Math.Min(text.Length, _cfg.MaxPromptChars)]}\n\"\"\"";
-            _log.LogDebug($"Classificatie prompt (start): {prompt.Substring(0, Math.Min(prompt.Length, 200))}(...)");
-
-            string? ans = null;
-            try
-            {
-                ct.ThrowIfCancellationRequested();
-                ans = _cfg.Provider switch
+                if (string.IsNullOrWhiteSpace(ans))
                 {
-                    LlmProvider.Gemini => await AskGeminiAsync(prompt, ct),
-                    LlmProvider.AzureOpenAI => await AskAzureAsync(_azureClient, _cfg.AzureDeployment, prompt, _cfg.SystemPrompt, ct),
-                    LlmProvider.OpenAI => await AskOpenAiAsync(prompt, ct),
-                    _ => null // Should have been caught by initial check
-                };
-            }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex)
-            {
-                _log.LogError(ex, $"Fout tijdens LLM API call voor classificatie (Provider: {_cfg.Provider}).");
-            }
-
-            if (string.IsNullOrWhiteSpace(ans))
-            {
-                _log.LogWarning("LLM gaf geen antwoord of een leeg antwoord voor classificatie. Gebruik heuristiek.");
-                return Heuristic(text);
-            }
-
-            _log.LogDebug($"LLM antwoord voor classificatie (ruw): '{ans}'");
-
-            string normalizedAns = Normalize(ans);
-            string? matchedKey = _cfg.Categories.Keys.FirstOrDefault(k => Normalize(k) == normalizedAns);
-
-            if (matchedKey != null)
-            {
-                _log.LogInformation($"Genormaliseerd LLM antwoord '{normalizedAns}' komt overeen met categorie KEY: '{matchedKey}'.");
-                return matchedKey;
-            }
-            else
-            {
-                // Log if the answer was close to any key (optional, for debugging)
-                foreach (var key in _cfg.Categories.Keys)
-                {
-                    if (ans.Contains(key, StringComparison.OrdinalIgnoreCase) || key.Contains(ans, StringComparison.OrdinalIgnoreCase))
-                    {
-                        _log.LogDebug($"LLM antwoord '{ans}' bevat/is bevattend in KEY '{key}', maar normalisatie mislukte match.");
-                        break;
-                    }
+                    _log.LogWarning("LLM gaf geen antwoord of een leeg antwoord voor mappad generatie.");
+                    return string.Empty;
                 }
-                _log.LogWarning($"Genormaliseerd LLM antwoord '{normalizedAns}' (origineel: '{ans}') komt niet overeen met een bekende categorie KEY. Gebruik heuristiek.");
-                return Heuristic(text);
-            }
-        }
 
-  
+                _log.LogDebug($"LLM antwoord voor volledig mappad (ruw): '{ans}'");
+                // Sanitize the full path suggested by AI
+                string sanitizedFullPath = FileUtils.SanitizePathStructure(ans.Trim());
+                _log.LogInformation($"Gesaneerd AI volledig mappad suggestie: '{sanitizedFullPath}'.");
 
-        private async Task<string?> AskGeminiAsync(string prompt, CancellationToken ct)
-        {
-            if (_geminiClient == null) return null;
-
-            _log.LogDebug($"Verzoek naar Gemini model: {_cfg.ModelName}");
-
-            var model = _geminiClient.GenerativeModel(_cfg.ModelName);
-
-            try
-            {
-                var start = DateTime.UtcNow;
-                var response = await Task.Run(() => model.GenerateContent(prompt), ct);
-                var duration = DateTime.UtcNow - start;
-
-                _log.LogInformation($"Gemini antwoord ontvangen in {duration.TotalMilliseconds} ms.");
-                _log.LogDebug($"Gemini response tokens approx. (schatting): prompt={prompt.Length / 4}, response={response.Text?.Length / 4}");
-
-                return response.Text?.Trim();
-            }
-            catch (Exception ex)
-            {
-                _log.LogError(ex, $"Fout tijdens Gemini API-aanroep.");
-                return null;
-            }
-        }
-
-        private async Task<string?> AskOpenAiAsync(string prompt, CancellationToken ct)
-        {
-            if (_openAIHttpClient == null)
-            {
-                _log.LogError("OpenAI HTTP client is niet geïnitialiseerd.");
-                return null;
-            }
-
-            var requestBody = new
-            {
-                model = _cfg.ModelName,
-                messages = new[]
+                // Check if AI returned a placeholder or effectively empty path
+                if (string.IsNullOrWhiteSpace(sanitizedFullPath) ||
+                    sanitizedFullPath == "_" ||
+                    sanitizedFullPath.Equals(FileUtils.SanitizePathStructure(""), StringComparison.OrdinalIgnoreCase) || // What SanitizePathStructure returns for ""
+                    sanitizedFullPath.Equals("Default_Path", StringComparison.OrdinalIgnoreCase) ||
+                    sanitizedFullPath.Equals("Uncategorized_Path", StringComparison.OrdinalIgnoreCase))
                 {
-            new { role = "system", content = _cfg.SystemPrompt },
-            new { role = "user", content = prompt }
-        },
-                max_tokens = _cfg.MaxCompletionTokens,
-                temperature = _cfg.Temperature,
-            };
-
-            var content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json");
-
-            try
+                    _log.LogDebug("AI gaf een leeg of placeholder pad terug. Beschouw als geen suggestie.");
+                    return string.Empty;
+                }
+                return sanitizedFullPath;
+            }
+            private async Task GenerateMetadataFileAsync(
+                FileInfo originalFile, // Original FileInfo
+                string newFullFilePath, // Full path of the moved file
+                string detectedCategoryKey, // The KEY AI identified (e.g., "Bankafschriften")
+                string targetFolderRelativePath, // The VALUE from Categories (e.g., "1. Financiën/1.01. Bankafschriften")
+                string? aiSuggestedFilename,
+                string extractedText,
+                IProgress<string>? progress,
+                CancellationToken ct)
             {
-                var start = DateTime.UtcNow;
-                var response = await _openAIHttpClient.PostAsync(_cfg.OpenAICompletionsEndpoint, content, ct);
-                var duration = DateTime.UtcNow - start;
-
-                string responseJson = await response.Content.ReadAsStringAsync(ct);
-                _log.LogInformation($"OpenAI antwoord ontvangen in {duration.TotalMilliseconds} ms voor model: {_cfg.ModelName}");
-
-                if (!response.IsSuccessStatusCode)
+                var metadata = new FileMetadata
                 {
-                    _log.LogError($"OpenAI fout {response.StatusCode}: {responseJson}");
+                    OriginalFullPath = originalFile.FullName,
+                    OriginalFilename = originalFile.Name,
+                    ProcessedTimestampUtc = DateTime.UtcNow,
+                    DetectedCategoryKey = detectedCategoryKey,
+                    TargetFolderRelativePath = targetFolderRelativePath,
+                    AISuggestedFilename = aiSuggestedFilename,
+                    FinalFilename = Path.GetFileName(newFullFilePath),
+                    ExtractedTextPreview = extractedText.Length > _cfg.MetadataExtractedTextPreviewLength
+                                           ? extractedText.Substring(0, _cfg.MetadataExtractedTextPreviewLength) + "..."
+                                           : extractedText
+                };
+
+                string metadataPath = Path.ChangeExtension(newFullFilePath, ".metadata.json");
+                _log.LogDebug($"Genereren metadata bestand: {metadataPath}");
+
+                try
+                {
+                    ct.ThrowIfCancellationRequested();
+                    string json = JsonSerializer.Serialize(metadata, new JsonSerializerOptions { WriteIndented = true });
+                    await File.WriteAllTextAsync(metadataPath, json, ct);
+                    progress?.Report($"Ⓜ️ Metadata voor {Path.GetFileName(newFullFilePath)}");
+                }
+                catch (OperationCanceledException)
+                {
+                    _log.LogWarning($"Metadata generatie geannuleerd voor {Path.GetFileName(newFullFilePath)}.");
+                    progress?.Report($"⚠️ Metadata generatie geannuleerd voor {Path.GetFileName(newFullFilePath)}");
+                    // Optionally delete partially written file if that's a concern
+                }
+                catch (Exception ex)
+                {
+                    _log.LogError(ex, $"Schrijven metadata voor {originalFile.Name} naar {metadataPath} mislukt.");
+                    progress?.Report($"❌ Fout bij metadata voor {Path.GetFileName(newFullFilePath)}");
+                }
+            }
+
+            private async Task<string> ClassifyAsync(string text, CancellationToken ct)
+            {
+                if (_geminiClient == null && _azureClient == null && _openAIHttpClient == null)
+                {
+                    _log.LogWarning("Geen LLM provider geconfigureerd voor classificatie. Gebruik heuristiek.");
+                    return Heuristic(text);
+                }
+
+                if (_cfg.Categories == null || !_cfg.Categories.Any())
+                {
+                    _log.LogWarning("Categorieënlijst is leeg in configuratie. Gebruik fallback categorie KEY.");
+                    return _cfg.FallbackCategory;
+                }
+
+                string catKeysList = string.Join(" | ", _cfg.Categories.Keys);
+                string prompt = $"{_cfg.SystemPrompt}\n\nAnalyseer de volgende tekst en classificeer deze in EXACT EEN van de volgende categorieën. " +
+                                $"Antwoord ALLEEN met de exacte categorienaam uit de verstrekte lijst.\n" +
+                                $"Beschikbare categorieën: {catKeysList}\n\n" +
+                                $"Tekst om te classificeren:\n\"\"\"\n{text[..Math.Min(text.Length, _cfg.MaxPromptChars)]}\n\"\"\"";
+                _log.LogDebug($"Classificatie prompt (start): {prompt.Substring(0, Math.Min(prompt.Length, 200))}(...)");
+
+                string? ans = null;
+                try
+                {
+                    ct.ThrowIfCancellationRequested();
+                    ans = _cfg.Provider switch
+                    {
+                        LlmProvider.Gemini => await AskGeminiAsync(prompt, ct),
+                        LlmProvider.AzureOpenAI => await AskAzureAsync(_azureClient, _cfg.AzureDeployment, prompt, _cfg.SystemPrompt, ct),
+                        LlmProvider.OpenAI => await AskOpenAiAsync(prompt, ct),
+                        _ => null // Should have been caught by initial check
+                    };
+                }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception ex)
+                {
+                    _log.LogError(ex, $"Fout tijdens LLM API call voor classificatie (Provider: {_cfg.Provider}).");
+                }
+
+                if (string.IsNullOrWhiteSpace(ans))
+                {
+                    _log.LogWarning("LLM gaf geen antwoord of een leeg antwoord voor classificatie. Gebruik heuristiek.");
+                    return Heuristic(text);
+                }
+
+                _log.LogDebug($"LLM antwoord voor classificatie (ruw): '{ans}'");
+
+                string normalizedAns = Normalize(ans);
+                string? matchedKey = _cfg.Categories.Keys.FirstOrDefault(k => Normalize(k) == normalizedAns);
+
+                if (matchedKey != null)
+                {
+                    _log.LogInformation($"Genormaliseerd LLM antwoord '{normalizedAns}' komt overeen met categorie KEY: '{matchedKey}'.");
+                    return matchedKey;
+                }
+                else
+                {
+                    // Log if the answer was close to any key (optional, for debugging)
+                    foreach (var key in _cfg.Categories.Keys)
+                    {
+                        if (ans.Contains(key, StringComparison.OrdinalIgnoreCase) || key.Contains(ans, StringComparison.OrdinalIgnoreCase))
+                        {
+                            _log.LogDebug($"LLM antwoord '{ans}' bevat/is bevattend in KEY '{key}', maar normalisatie mislukte match.");
+                            break;
+                        }
+                    }
+                    _log.LogWarning($"Genormaliseerd LLM antwoord '{normalizedAns}' (origineel: '{ans}') komt niet overeen met een bekende categorie KEY. Gebruik heuristiek.");
+                    return Heuristic(text);
+                }
+            }
+
+
+
+            private async Task<string?> AskGeminiAsync(string prompt, CancellationToken ct)
+            {
+                if (_geminiClient == null) return null;
+
+                _log.LogDebug($"Verzoek naar Gemini model: {_cfg.ModelName}");
+
+                var model = _geminiClient.GenerativeModel(_cfg.ModelName);
+
+                try
+                {
+                    var start = DateTime.UtcNow;
+                    var response = await Task.Run(() => model.GenerateContent(prompt), ct);
+                    var duration = DateTime.UtcNow - start;
+
+                    _log.LogInformation($"Gemini antwoord ontvangen in {duration.TotalMilliseconds} ms.");
+                    _log.LogDebug($"Gemini response tokens approx. (schatting): prompt={prompt.Length / 4}, response={response.Text?.Length / 4}");
+
+                    return response.Text?.Trim();
+                }
+                catch (Exception ex)
+                {
+                    _log.LogError(ex, $"Fout tijdens Gemini API-aanroep.");
+                    return null;
+                }
+            }
+
+            private async Task<string?> AskOpenAiAsync(string prompt, CancellationToken ct)
+            {
+                if (_openAIHttpClient == null)
+                {
+                    _log.LogError("OpenAI HTTP client is niet geïnitialiseerd.");
                     return null;
                 }
 
-                using var jsonDoc = JsonDocument.Parse(responseJson);
-                var root = jsonDoc.RootElement;
-
-                // Log tokens if present
-                if (root.TryGetProperty("usage", out var usage))
+                var requestBody = new
                 {
-                    _log.LogDebug($"Tokens gebruikt: prompt={usage.GetProperty("prompt_tokens")}, completion={usage.GetProperty("completion_tokens")}, totaal={usage.GetProperty("total_tokens")}");
+                    model = _cfg.ModelName,
+                    messages = new[]
+                    {
+            new { role = "system", content = _cfg.SystemPrompt },
+            new { role = "user", content = prompt }
+        },
+                    max_tokens = _cfg.MaxCompletionTokens,
+                    temperature = _cfg.Temperature,
+                };
+
+                var content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json");
+
+                try
+                {
+                    var start = DateTime.UtcNow;
+                    var response = await _openAIHttpClient.PostAsync(_cfg.OpenAICompletionsEndpoint, content, ct);
+                    var duration = DateTime.UtcNow - start;
+
+                    string responseJson = await response.Content.ReadAsStringAsync(ct);
+                    _log.LogInformation($"OpenAI antwoord ontvangen in {duration.TotalMilliseconds} ms voor model: {_cfg.ModelName}");
+
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        _log.LogError($"OpenAI fout {response.StatusCode}: {responseJson}");
+                        return null;
+                    }
+
+                    using var jsonDoc = JsonDocument.Parse(responseJson);
+                    var root = jsonDoc.RootElement;
+
+                    // Log tokens if present
+                    if (root.TryGetProperty("usage", out var usage))
+                    {
+                        _log.LogDebug($"Tokens gebruikt: prompt={usage.GetProperty("prompt_tokens")}, completion={usage.GetProperty("completion_tokens")}, totaal={usage.GetProperty("total_tokens")}");
+                    }
+
+                    return root.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString()?.Trim();
+                }
+                catch (Exception ex)
+                {
+                    _log.LogError(ex, "Fout tijdens OpenAI API-aanroep.");
+                    return null;
+                }
+            }
+
+
+
+            public async Task<string?> AskAzureAsync(
+                AzureOpenAIClient azureClient,
+                string deploymentName,
+                string userPrompt,
+                string systemPrompt,
+                CancellationToken ct)
+            {
+                if (azureClient == null || string.IsNullOrWhiteSpace(deploymentName))
+                {
+                    _log.LogError("Azure client of deployment niet correct geïnitialiseerd.");
+                    return null;
                 }
 
-                return root.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString()?.Trim();
-            }
-            catch (Exception ex)
-            {
-                _log.LogError(ex, "Fout tijdens OpenAI API-aanroep.");
-                return null;
-            }
-        }
+                try
+                {
+                    // Maak de ChatClient aan
+                    ChatClient chatClient = azureClient.GetChatClient(deploymentName);
+
+                    // Bouw het chatverloop op
+                    var messages = new List<OpenAI.Chat.ChatMessage>();
+                    if (!string.IsNullOrWhiteSpace(systemPrompt))
+                        messages.Add(new SystemChatMessage(systemPrompt));
+
+                    messages.Add(new UserChatMessage(userPrompt));
+
+                    // (Optioneel) voeg eerdere assistant-berichten toe voor context
+
+                    var start = DateTime.UtcNow;
+
+                    // Maak een completions request
+                    ChatCompletion completion = await chatClient.CompleteChatAsync(messages, cancellationToken: ct);
+
+                    var duration = DateTime.UtcNow - start;
+                    _log.LogInformation($"Azure OpenAI antwoord ontvangen in {duration.TotalMilliseconds} ms voor deployment: {deploymentName}");
+
+                    // Log token usage indien aanwezig
+                    if (completion.Usage is not null)
+                    {
+                        _log.LogDebug($"Tokens gebruikt: prompt={completion.Usage.ToString()}, completion={completion.Usage.ToString()}, totaal={completion.Usage.ToString()}");
+                    }
+
+                    // Haal het eerste assistant-antwoord op (er kan maar één zijn bij 1 vraag)
+                    string? result = completion.Content?[0]?.Text?.Trim();
+
+                    return result;
+                }
+                catch (RequestFailedException ex)
+                {
+                    _log.LogError(ex, $"Azure SDK Fout tijdens Azure OpenAI aanroep. Status: {ex.Status}, ErrorCode: {ex.ErrorCode}, Details: {ex.Message}");
+                    return null;
+                }
+                catch (Exception ex)
+                {
+                    _log.LogError(ex, "Algemene fout tijdens Azure OpenAI aanroep.");
+                    return null;
+                } } 
+    
 
 
-
-public async Task<string?> AskAzureAsync(
-    AzureOpenAIClient azureClient,
-    string deploymentName,
-    string userPrompt,
-    string systemPrompt,
-    CancellationToken ct)
-    {
-        if (azureClient == null || string.IsNullOrWhiteSpace(deploymentName))
-        {
-            _log.LogError("Azure client of deployment niet correct geïnitialiseerd.");
-            return null;
-        }
-
-        try
-        {
-            // Maak de ChatClient aan
-            ChatClient chatClient = azureClient.GetChatClient(deploymentName);
-
-            // Bouw het chatverloop op
-            var messages = new List<OpenAI.Chat.ChatMessage>();
-            if (!string.IsNullOrWhiteSpace(systemPrompt))
-                messages.Add(new SystemChatMessage(systemPrompt));
-
-            messages.Add(new UserChatMessage(userPrompt));
-
-            // (Optioneel) voeg eerdere assistant-berichten toe voor context
-
-            var start = DateTime.UtcNow;
-
-            // Maak een completions request
-            ChatCompletion completion = await chatClient.CompleteChatAsync(messages, cancellationToken: ct);
-
-            var duration = DateTime.UtcNow - start;
-            _log.LogInformation($"Azure OpenAI antwoord ontvangen in {duration.TotalMilliseconds} ms voor deployment: {deploymentName}");
-
-            // Log token usage indien aanwezig
-            if (completion.Usage is not null)
-            {
-                _log.LogDebug($"Tokens gebruikt: prompt={completion.Usage.ToString()}, completion={completion.Usage.ToString()}, totaal={completion.Usage.ToString()}");
-            }
-
-            // Haal het eerste assistant-antwoord op (er kan maar één zijn bij 1 vraag)
-            string? result = completion.Content?[0]?.Text?.Trim();
-
-            return result;
-        }
-        catch (RequestFailedException ex)
-        {
-            _log.LogError(ex, $"Azure SDK Fout tijdens Azure OpenAI aanroep. Status: {ex.Status}, ErrorCode: {ex.ErrorCode}, Details: {ex.Message}");
-            return null;
-        }
-        catch (Exception ex)
-        {
-            _log.LogError(ex, "Algemene fout tijdens Azure OpenAI aanroep.");
-            return null;
-        }
-    }
 
 
 
