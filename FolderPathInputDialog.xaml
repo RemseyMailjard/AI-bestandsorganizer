@@ -1,0 +1,44 @@
+﻿<Window x:Class="AI_bestandsorganizer.FolderPathInputDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Confirm Target Folder Path" Height="280" Width="550"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        ShowInTaskbar="False" FocusManager.FocusedElement="{Binding ElementName=FinalPathTextBox}">
+    <Grid Margin="15">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <!-- Predefined Path -->
+            <RowDefinition Height="Auto"/>
+            <!-- Suggested Path -->
+            <RowDefinition Height="Auto"/>
+            <!-- Final Path -->
+            <RowDefinition Height="Auto"/>
+            <!-- Buttons -->
+            <RowDefinition Height="*"/>
+            <!-- Warning -->
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="Auto"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="Predefined Path:" FontWeight="Bold" Margin="0,0,5,0" VerticalAlignment="Top"/>
+        <TextBlock Grid.Row="0" Grid.Column="1" x:Name="PredefinedPathTextBlock" TextWrapping="Wrap"/>
+
+        <TextBlock Grid.Row="1" Grid.Column="0" Text="Suggested Path:" FontWeight="Bold" Margin="0,10,5,0" VerticalAlignment="Top"/>
+        <TextBox Grid.Row="1" Grid.Column="1" x:Name="SuggestedPathTextBox" Margin="0,10,0,0" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" MaxHeight="60"/>
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="Final Path:" FontWeight="Bold" Margin="0,10,5,0" VerticalAlignment="Top"/>
+        <TextBox Grid.Row="2" Grid.Column="1" x:Name="FinalPathTextBox" Margin="0,10,0,0" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" MaxHeight="60"/>
+
+        <StackPanel Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,20,0,0">
+            <Button Content="Accept Suggested" Click="AcceptSuggested_Click" Margin="5" Padding="10,5"/>
+            <Button Content="Use Predefined" Click="UsePredefined_Click" Margin="5" Padding="10,5"/>
+            <Button Content="Apply Custom" Click="ApplyCustom_Click" Margin="5" Padding="10,5" IsDefault="True"/>
+        </StackPanel>
+
+        <TextBlock Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2" x:Name="WarningTextBlock"
+                   Text="Invalid path. Please enter a valid relative folder path." Foreground="Red"
+                   VerticalAlignment="Bottom" HorizontalAlignment="Center" Visibility="Collapsed"/>
+    </Grid>
+</Window>

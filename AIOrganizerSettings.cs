@@ -47,6 +47,14 @@ namespace AI_bestandsorganizer
         public bool GenerateMetadataFiles { get; set; } = false; // Generate .metadata.json files
         public int MetadataExtractedTextPreviewLength { get; set; } = 500; // Length of text preview in metadata
 
+
+        // AIOrganizerSettings.cs
+        // ... (existing properties)
+        public bool EnableAISuggestedFolders { get; set; } = false;
+        public string AISuggestedFoldersSystemPrompt { get; set; } = "You are an assistant that suggests hierarchical folder structures. Based on the document's content, its main category, and the base path for that category, suggest a concise and logical relative subfolder structure (e.g., YYYY/MM or specific_project_name). Keep it 1-3 levels deep at most. Respond ONLY with the relative subfolder path (e.g., '2023/Q4' or 'Project_Alpha/Invoices'). If no further specific subfolder makes sense, respond with an empty string.";
+        // ...
+
+
         // Categorization Configuration
         public string FallbackCategory { get; set; } = "Overig"; // This is the KEY for the fallback category
 
