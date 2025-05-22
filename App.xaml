@@ -2,8 +2,17 @@
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:local="clr-namespace:AI_bestandsorganizer"
-      >
+             xmlns:wpfui="http://schemas.lepo.co/wpfui/2022/xaml"> <!-- NIEUW: WPF UI namespace -->
     <Application.Resources>
-         
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- WPF UI Theme resources -->
+                <!-- Je kunt hier een specifiek thema kiezen, bijvoorbeeld:
+                     <wpfui:ThemesDictionary Theme="Dark" Accent="Green" />
+                     of gewoon de standaard (die donker en blauw-achtig is): -->
+                <wpfui:ThemesDictionary Theme="Dark" /> <!-- Standaard donker thema van WPF UI -->
+                <wpfui:ControlsDictionary /> <!-- WPF UI Controls thema -->
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
     </Application.Resources>
 </Application>

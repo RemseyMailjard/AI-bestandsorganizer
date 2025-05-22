@@ -1,140 +1,135 @@
 ﻿using System;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;                         // ← nodig voor FirstOrDefault
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Interop;
+
+using Windows.Storage;
+using Windows.Storage.Pickers;
+using WinRT.Interop;
 
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-using SysForms = System.Windows.Forms;              // alleen FolderBrowserDialog
-using WpfMsg = System.Windows.MessageBox;
-using WpfTextBox = System.Windows.Controls.TextBox;   // expliciete alias
+// WPF UI namespaces
+using Wpf.Ui;                      // ISnackbarService, ControlAppearance
+using Wpf.Ui.Controls;            // FluentWindow, PasswordBox, TextBox, Button, MessageBox, etc.
+
+// Aliases
+using UiButton = Wpf.Ui.Controls.Button;
+using UiMsgBox = Wpf.Ui.Controls.MessageBox;
+using UiMsgBtn = Wpf.Ui.Controls.MessageBoxButton;
+using WpfTextBox = Wpf.Ui.Controls.TextBox;
+using Wpf.Ui.Extensions;
 
 namespace AI_bestandsorganizer
 {
-    public partial class MainWindow : Window
+    public partial class MainWindow : FluentWindow
     {
         private readonly AIFileOrganizer _organizer;
         private readonly ILogger<MainWindow> _logger;
-        private readonly AIOrganizerSettings _settings; // Dit is de singleton die door DI wordt geïnjecteerd
+        private readonly AIOrganizerSettings _settings;
+        private readonly ISnackbarService _snackbar;
+
         private CancellationTokenSource? _cts;
 
         public MainWindow(
             AIFileOrganizer organizer,
             ILogger<MainWindow> logger,
-            IOptions<AIOrganizerSettings> settings) // AIOrganizerSettings wordt hier via IOptions<T> binnengehaald
+            IOptions<AIOrganizerSettings> settings,
+            ISnackbarService snackbar)
         {
             InitializeComponent();
 
             _organizer = organizer ?? throw new ArgumentNullException(nameof(organizer));
-            _logger    = logger     ?? throw new ArgumentNullException(nameof(logger));
-            _settings  = settings.Value ?? throw new ArgumentNullException(nameof(settings)); // Haal de geconfigureerde instellingen op
+            _logger    = logger    ?? throw new ArgumentNullException(nameof(logger));
+            _settings  = settings.Value ?? throw new ArgumentNullException(nameof(settings));
+            _snackbar  = snackbar  ?? throw new ArgumentNullException(nameof(snackbar));
 
-            // UI init
+            // Initialiseer UI
             ApiKeyBox.Password = _settings.ApiKey;
 
-            var modelItem = ModelBox.Items.OfType<ComboBoxItem>()
-                                .FirstOrDefault(i => (string?)i.Content == _settings.ModelName);
+            var modelItem = ModelBox.Items
+                                     .OfType<ComboBoxItem>()
+                                     .FirstOrDefault(i => (string?)i.Content == _settings.ModelName);
             ModelBox.SelectedItem = modelItem ?? ModelBox.Items[0];
 
-            SrcBox.Text = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
-            DstBox.Text = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "AI-mappen");
+            SrcBox.Text = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+            DstBox.Text = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "AI-mappen");
 
-            // NIEUW: Stel de checkbox in op basis van de geladen instelling
             EnableRenamingCheckBox.IsChecked = _settings.EnableFileRenaming;
         }
 
-        // ---------- Browse-knoppen ----------
-        private void BrowseSrc(object? _, RoutedEventArgs e) => Browse(SrcBox);
-        private void BrowseDst(object? _, RoutedEventArgs e) => Browse(DstBox);
+        // ---------------- Folder pickers ----------------
+        private async void BrowseSrc(object? _, RoutedEventArgs e) => await BrowseFolder(SrcBox);
+        private async void BrowseDst(object? _, RoutedEventArgs e) => await BrowseFolder(DstBox);
 
-        private static void Browse(WpfTextBox target)
+        private async Task BrowseFolder(WpfTextBox target)
         {
-            using var dlg = new SysForms.FolderBrowserDialog
+            var picker = new FolderPicker
             {
-                InitialDirectory = Directory.Exists(target.Text)
-                    ? target.Text
-                    : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments)
+                ViewMode = PickerViewMode.List,
+                SuggestedStartLocation = PickerLocationId.DocumentsLibrary
             };
-            if (dlg.ShowDialog() == SysForms.DialogResult.OK)
-                target.Text = dlg.SelectedPath;
+            picker.FileTypeFilter.Add("*");
+
+            InitializeWithWindow.Initialize(picker, new WindowInteropHelper(this).Handle);
+
+            if (await picker.PickSingleFolderAsync() is StorageFolder folder)
+                target.Text = folder.Path;
         }
 
-        // ---------- Run-knop ----------
+        // ---------------- Run ----------------
         private async void Run_Click(object sender, RoutedEventArgs e)
         {
-            var runBtn = sender as System.Windows.Controls.Button;
-            if (runBtn is not null) runBtn.IsEnabled = false;
+            if (sender is UiButton runBtn) runBtn.IsEnabled = false;
 
             LogBox.Clear();
-            Log("🚀 Organiseren gestart …");
+            Log("🚀 Organiseren gestart…");
 
             if (string.IsNullOrWhiteSpace(ApiKeyBox.Password))
             {
-                Log("❌ Fout: API-key ontbreekt");
-                WpfMsg.Show("API-key ontbreekt.", "AI File Organizer",
-                            MessageBoxButton.OK, MessageBoxImage.Warning);
-                if (runBtn is not null) runBtn.IsEnabled = true;
+                _snackbar.Show(
+                    "API‑key ontbreekt",
+                    "Voer een geldige sleutel in om verder te gaan.",
+                    ControlAppearance.Caution,
+                    TimeSpan.FromSeconds(4));
+                if (sender is UiButton rb) rb.IsEnabled = true;
                 return;
             }
 
-            // settings live bijwerken voor de huidige run
-            _settings.ApiKey = ApiKeyBox.Password;
-            _settings.ModelName = ((ComboBoxItem)ModelBox.SelectedItem)!.Content!.ToString()!;
-            // NIEUW: Werk de EnableFileRenaming setting bij van de UI
+            _settings.ApiKey             = ApiKeyBox.Password;
+            _settings.ModelName          = ((ComboBoxItem)ModelBox.SelectedItem)!.Content!.ToString()!;
             _settings.EnableFileRenaming = EnableRenamingCheckBox.IsChecked ?? false;
-
 
             _cts = new CancellationTokenSource();
 
             try
             {
-                var prog = new Progress<string>(Log);
+                var progress = new Progress<string>(Log);
+                FilenameConfirmationHandler? confirmer = null;
 
-                // Initialiseer de FilenameConfirmationHandler ALLEEN als hernoemen is ingeschakeld
-                FilenameConfirmationHandler? filenameConfirmer = null;
-                // Deel 'EnableDescriptiveFilenames' blijft actief om de AI-suggesties te genereren.
-                // 'EnableFileRenaming' is de override om te bepalen of *überhaupt* hernoemd wordt.
                 if (_settings.EnableFileRenaming && _settings.EnableDescriptiveFilenames)
                 {
-                    filenameConfirmer = async (originalFilenameBase, suggestedFilenameBase, progressReporter) =>
+                    confirmer = async (orig, sugg, prog) =>
                     {
                         return await Dispatcher.Invoke(async () =>
                         {
-                            progressReporter?.Report($"Awaiting filename confirmation for '{originalFilenameBase}'...");
-
-                            var dialog = new FilenameInputDialog(originalFilenameBase, suggestedFilenameBase);
-                            dialog.Owner = this;
-
-                            bool? dialogResult = dialog.ShowDialog();
-
-                            if (dialogResult == true)
-                            {
-                                progressReporter?.Report($"Filename confirmed: '{dialog.ResultFilename}'");
-                                return dialog.ResultFilename;
-                            }
-                            else
-                            {
-                                progressReporter?.Report($"Filename confirmation cancelled. Keeping original name: '{originalFilenameBase}'");
-                                return originalFilenameBase;
-                            }
+                            prog?.Report($"Wacht op bevestiging voor '{orig}'…");
+                            var dlg = new FilenameInputDialog(orig, sugg) { Owner = this };
+                            return dlg.ShowDialog() == true ? dlg.ResultFilename : orig;
                         });
                     };
                 }
-                // Als EnableFileRenaming FALSE is, blijft filenameConfirmer NULL.
-                // AIFileOrganizer zal dan default de originele bestandsnaam gebruiken.
 
+                (int processed, int moved) = await _organizer.OrganizeAsync(
+                    SrcBox.Text, DstBox.Text, confirmer, progress, _cts.Token);
 
-                var (proc, moved) = await _organizer
-                    .OrganizeAsync(SrcBox.Text, DstBox.Text, filenameConfirmer, prog, _cts.Token);
-
-                Log($"✅ Klaar! {moved}/{proc} bestanden verplaatst.");
+                Log($"✅ Klaar! {moved}/{processed} bestanden verplaatst.");
             }
             catch (OperationCanceledException)
             {
@@ -147,36 +142,37 @@ namespace AI_bestandsorganizer
             }
             finally
             {
-                if (runBtn is not null) runBtn.IsEnabled = true;
+                if (sender is UiButton rb) rb.IsEnabled = true;
                 _cts?.Dispose();
                 _cts = null;
             }
         }
 
-        // ---------- Log helper ----------
-        private void Log(string line) =>
-            Dispatcher.Invoke(() =>
-            {
-                LogBox.AppendText(line + Environment.NewLine);
-                LogBox.ScrollToEnd();
-            });
+        // ---------------- Helpers ----------------
+        private void Log(string message) => Dispatcher.Invoke(() =>
+        {
+            LogBox.AppendText(message + Environment.NewLine);
+            LogBox.ScrollToEnd();
+        });
 
-        // ---------- LinkedIn-knop ----------
         private void OpenLinkedIn(object? _, RoutedEventArgs e)
         {
             try
             {
                 Process.Start(new ProcessStartInfo
                 {
-                    FileName       = "https://www.linkedin.com/in/remseymailjard/",
+                    FileName = "https://www.linkedin.com/in/remseymailjard/",
                     UseShellExecute = true
                 });
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "LinkedIn link openen mislukt.");
-                WpfMsg.Show($"Kan link niet openen: {ex.Message}",
-                            "Fout", MessageBoxButton.OK, MessageBoxImage.Error);
+                _logger.LogError(ex, "LinkedIn-link openen mislukt");
+                //UiMsgBox.Show(
+                //    "Fout",
+                //    $"Kan link niet openen: {ex.Message}",
+                //    UiMsgBtn.Close,
+                //    ControlAppearance.Danger);
             }
         }
     }
