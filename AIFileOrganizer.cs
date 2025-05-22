@@ -16,7 +16,7 @@ using WordText = DocumentFormat.OpenXml.Wordprocessing.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-using Mscc.GenerativeAI; // Belangrijk voor GenerateContentResponse
+using Mscc.GenerativeAI;
 
 namespace AI_bestandsorganizer
 {
@@ -43,7 +43,6 @@ namespace AI_bestandsorganizer
                 StringComparer.OrdinalIgnoreCase);
         }
 
-        // GEWIJZIGD: Retourneert nu ook totalTokensUsed
         public async Task<(int processed, int moved, long totalTokensUsed)> OrganizeAsync(
             string srcDir,
             string dstDir,
@@ -60,7 +59,7 @@ namespace AI_bestandsorganizer
             Directory.CreateDirectory(dstDir);
 
             int processed = 0, moved = 0;
-            long totalTokensUsed = 0; // NIEUW: Token teller
+            long totalTokensUsed = 0;
 
             foreach (var fileInfo in src.EnumerateFiles("*", SearchOption.AllDirectories))
             {
@@ -73,10 +72,12 @@ namespace AI_bestandsorganizer
                 }
 
                 processed++;
-                progress?.Report($"📄 {fileInfo.FullName} lezen …");
+                progress?.Report($"📄 Reading {fileInfo.FullName}...");
 
                 string category = _settings.FallbackCategory;
-                string targetLabel = $"0. {_settings.FallbackCategory}";
+                string targetLabel = _settings.Categories.TryGetValue(_settings.FallbackCategory, out var fbLabel)
+                                     ? fbLabel
+                                     : $"0. {_settings.FallbackCategory}"; // Ensure fallback has a prefix if needed
                 string finalFilenameBase = Path.GetFileNameWithoutExtension(fileInfo.Name);
 
                 try
@@ -84,19 +85,17 @@ namespace AI_bestandsorganizer
                     string text = await ExtractTextAsync(fileInfo).ConfigureAwait(false);
                     if (!string.IsNullOrWhiteSpace(text))
                     {
-                        // Classify
                         var (classifiedCategory, classificationTokens) = await ClassifyAsync(text, progress, cancellationToken).ConfigureAwait(false);
                         category = classifiedCategory;
-                        totalTokensUsed += classificationTokens; // Tokens optellen
-                        progress?.Report($"Tokens for classification: {classificationTokens}");
+                        totalTokensUsed += classificationTokens;
+                        progress?.Report($"Tokens for classification: {classificationTokens}. Classified as: {category}");
 
 
                         if (_settings.EnableDescriptiveFilenames && confirmFilename != null)
                         {
                             progress?.Report($"📝 Generating descriptive filename for '{fileInfo.Name}' ({category})...");
-                            // Generate filename
                             var (suggestedFilename, filenameTokens) = await GenerateFilenameAsync(text, fileInfo.Name, category, progress, cancellationToken).ConfigureAwait(false);
-                            totalTokensUsed += filenameTokens; // Tokens optellen
+                            totalTokensUsed += filenameTokens;
                             progress?.Report($"Tokens for filename suggestion: {filenameTokens}");
 
                             finalFilenameBase = await confirmFilename(
@@ -114,18 +113,22 @@ namespace AI_bestandsorganizer
                     }
                     else
                     {
-                        _logger.LogWarning("Geen tekst geëxtraheerd uit {File}. Classificatie naar fallback.", fileInfo.FullName);
-                        progress?.Report($"⚠️ Geen tekst geëxtraheerd uit '{fileInfo.Name}'. Gaat naar '{_settings.FallbackCategory}'.");
+                        _logger.LogWarning("No text extracted from {File}. Classifying to fallback.", fileInfo.FullName);
+                        progress?.Report($"⚠️ No text extracted from '{fileInfo.Name}'. Moving to '{_settings.FallbackCategory}'.");
                     }
 
+                    // Use the determined category (which might be fallback) to find the target label
                     targetLabel = _settings.Categories.TryGetValue(category, out var mapped)
                                   ? mapped
-                                  : $"0. {_settings.FallbackCategory}";
+                                  : _settings.Categories.TryGetValue(_settings.FallbackCategory, out fbLabel) ? fbLabel : $"0. {_settings.FallbackCategory}";
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Classificatie/naamgeneratie mislukt voor {File}", fileInfo.FullName);
-                    progress?.Report($"❌ Fout bij verwerken van {fileInfo.Name}: {ex.Message}. Gaat naar '{_settings.FallbackCategory}'.");
+                    _logger.LogError(ex, "Classification/filename generation failed for {File}", fileInfo.FullName);
+                    progress?.Report($"❌ Error processing {fileInfo.Name}: {ex.Message}. Moving to '{_settings.FallbackCategory}'.");
+                    // Ensure category and targetLabel are set to fallback if an error occurs
+                    category = _settings.FallbackCategory;
+                    targetLabel = _settings.Categories.TryGetValue(_settings.FallbackCategory, out fbLabel) ? fbLabel : $"0. {_settings.FallbackCategory}";
                 }
 
                 string targetDir = Path.Combine(dstDir, targetLabel);
@@ -142,85 +145,127 @@ namespace AI_bestandsorganizer
                 {
                     fileInfo.MoveTo(dest);
                     moved++;
-                    progress?.Report($"✅ {fileInfo.Name} → {Path.GetFileName(dest)} (naar {targetLabel})");
+                    progress?.Report($"✅ {fileInfo.Name} → {Path.GetFileName(dest)} (to {targetLabel})");
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Verplaatsen mislukt voor {File}", fileInfo.FullName);
-                    progress?.Report($"❌ Fout bij verplaatsen van {fileInfo.Name}: {ex.Message}");
+                    _logger.LogError(ex, "Move failed for {File}", fileInfo.FullName);
+                    progress?.Report($"❌ Error moving {fileInfo.Name}: {ex.Message}");
                 }
             }
 
-            progress?.Report($"Organisatie klaar – {processed} verwerkt, {moved} verplaatst. Totale tokens: {totalTokensUsed}");
-            return (processed, moved, totalTokensUsed); // GEWIJZIGD
+            progress?.Report($"Organization complete – {processed} processed, {moved} moved. Total tokens: {totalTokensUsed}");
+            return (processed, moved, totalTokensUsed);
         }
 
-        // GEWIJZIGD: Retourneert nu (string category, int tokens) en accepteert IProgress
         private async Task<(string category, int tokens)> ClassifyAsync(string text, IProgress<string>? progress, CancellationToken ct)
         {
-            string catList = string.Join('\n', _settings.Categories.Keys.Select(k => k.Trim()));
-            int tokensUsed = 0; // Token teller voor deze call
+            // Prepare the list of category keys from appsettings.json
+            // These are the EXACT strings the AI should try to return.
+            var categoryKeys = _settings.Categories.Keys.Select(k => k.Trim()).ToList();
+            string catListString = string.Join("\n- ", categoryKeys);
+            int tokensUsed = 0;
 
+            // --- Improved Prompt ---
+            // Added more explicit instructions, structure, and a clear fallback instruction.
+            // Consider adding 1-2 shot examples if simple prompting isn't enough.
             string prompt =
-                $"Classificeer dit document in ÉÉN van de volgende categorieën:\n" +
-                $"{catList}\n" +
-                $"Als het document in geen van deze categorieën past, antwoord dan ' {_settings.FallbackCategory} '.\n" +
-                $"BELANGRIJK: Antwoord ALLEEN met de naam van de categorie, zonder extra tekst, cijfers, punten of uitleg. Bijvoorbeeld: 'Financiën' of 'Gezondheid en Medisch'.\n\n" +
-                "Documentinhoud:\n" +
-                text[..Math.Min(text.Length, _settings.MaxPromptChars)];
+                "You are an expert document classifier. Your task is to classify the following document content into ONE of the predefined categories. " +
+                "The available categories are:\n" +
+                $"- {catListString}\n\n" +
+                "Instructions:\n" +
+                "1. Read the document content carefully.\n" +
+                "2. Determine which of the listed categories best describes the main topic of the document.\n" +
+                $"3. If the document clearly fits one of the categories, respond with the EXACT category name from the list. For example, if the best category is 'Financiën', your response must be 'Financiën'.\n" +
+                $"4. If the document does not fit well into any of the listed categories, or if you are unsure, respond with the EXACT phrase: '{_settings.FallbackCategory}'.\n" +
+                "5. DO NOT add any extra text, explanations, numbers, or punctuation around the category name. Your entire response should be ONLY the chosen category name or the fallback phrase.\n\n" +
+                // Optional: Few-shot examples (uncomment and adapt if needed)
+                // "Example 1:\n" +
+                // "Document Content: [Short example text about a bank statement]\n" +
+                // "Category: Financiën\n\n" +
+                // "Example 2:\n" +
+                // "Document Content: [Short example text about a doctor's appointment]\n" +
+                // "Category: Gezondheid en Medisch\n\n" +
+                "Document Content to Classify:\n" +
+                "-------------------------------------\n" +
+                text[..Math.Min(text.Length, _settings.MaxPromptChars)] +
+                "\n-------------------------------------\n" +
+                "Chosen Category:"; // Encourage the AI to fill in its choice here
 
-            _logger.LogDebug("Classify Prompt voor AI:\n{Prompt}", prompt);
+            _logger.LogDebug("Classification Prompt for AI:\n{Prompt}", prompt);
 
             var model = _google.GenerativeModel(_settings.ModelName);
-            string? ans = null;
-            GenerateContentResponse? result = null; // Hou de response bij
+            string? rawAiResponse = null;
+            GenerateContentResponse? apiResult = null;
             try
             {
-                result = await model.GenerateContent(prompt, cancellationToken: ct);
-                ans = result.Text?.Trim();
-                tokensUsed = result.UsageMetadata?.TotalTokenCount ?? 0; // Haal tokens op
+                apiResult = await model.GenerateContent(prompt, cancellationToken: ct);
+                rawAiResponse = apiResult.Text?.Trim();
+                tokensUsed = apiResult.UsageMetadata?.TotalTokenCount ?? 0;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Fout bij aanroepen van Gemini API voor classificatie.");
+                _logger.LogError(ex, "Error calling Gemini API for classification.");
                 progress?.Report($"⚠️ API error during classification: {ex.Message}");
+                return (_settings.FallbackCategory, tokensUsed); // Return fallback on API error
             }
 
-            _logger.LogDebug("Ruwe AI-antwoord (classificatie): '{Ans}'", ans);
-            _logger.LogDebug("Tokens gebruikt voor classificatie: {Tokens}", tokensUsed);
+            _logger.LogInformation("Raw AI response (classification): '{RawAiResponse}'", rawAiResponse);
+            _logger.LogDebug("Tokens used for classification: {Tokens}", tokensUsed);
 
-
-            if (string.IsNullOrEmpty(ans))
+            if (string.IsNullOrWhiteSpace(rawAiResponse))
             {
-                _logger.LogWarning("AI gaf geen antwoord voor classificatie. Terugval naar '{Fallback}'.", _settings.FallbackCategory);
+                _logger.LogWarning("AI returned an empty or whitespace response for classification. Falling back to '{Fallback}'.", _settings.FallbackCategory);
                 return (_settings.FallbackCategory, tokensUsed);
             }
 
-            string normalizedAns = ans.Trim();
-            normalizedAns = Regex.Replace(normalizedAns, @"^(Category:\s*|Categorie:\s*|\[|\]|\.|\d+\.\s*)", "", RegexOptions.IgnoreCase);
-            normalizedAns = Regex.Replace(normalizedAns, @"(\.|\d+\.\s*)$", "");
-            normalizedAns = normalizedAns.Trim();
+            // --- Improved Response Normalization and Matching ---
+            // Remove potential prefixes/suffixes more robustly and perform a case-insensitive direct match.
+            string normalizedResponse = rawAiResponse.Trim();
 
-            string? matchedCategory = _settings.Categories.Keys
-                .FirstOrDefault(key => string.Equals(key, normalizedAns, StringComparison.OrdinalIgnoreCase));
-
-            if (matchedCategory != null)
+            // Strip common prefixes/suffixes that models might add despite instructions
+            string[] prefixesToRemove = { "Category:", "Categorie:", "Chosen Category:", "Classification:" };
+            foreach (var prefix in prefixesToRemove)
             {
-                _logger.LogInformation("AI geclassificeerd als '{MatchedCategory}' (genormaliseerd van '{OriginalAns}').", matchedCategory, ans);
-                return (matchedCategory, tokensUsed);
+                if (normalizedResponse.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    normalizedResponse = normalizedResponse.Substring(prefix.Length).Trim();
+                    break;
+                }
+            }
+            // Remove potential quotes or list markers if the AI still adds them
+            normalizedResponse = normalizedResponse.TrimStart('"', '\'', '-', '*').TrimEnd('"', '\'', '.');
+            normalizedResponse = normalizedResponse.Trim();
+
+            _logger.LogDebug("Normalized AI response (classification): '{NormalizedResponse}'", normalizedResponse);
+
+            // Case-insensitive direct match against the *keys* of your Categories dictionary
+            string? matchedCategoryKey = categoryKeys
+                .FirstOrDefault(key => string.Equals(key, normalizedResponse, StringComparison.OrdinalIgnoreCase));
+
+            if (matchedCategoryKey != null)
+            {
+                _logger.LogInformation("AI classified as '{MatchedCategoryKey}' (matched from AI response '{RawAiResponse}').", matchedCategoryKey, rawAiResponse);
+                return (matchedCategoryKey, tokensUsed); // Return the *exact key* from your settings
             }
             else
             {
-                _logger.LogWarning("AI-antwoord '{OriginalAns}' kon niet worden gemapt op een bekende categorie. Genormaliseerd naar '{NormalizedAns}'. Terugval naar '{Fallback}'.", ans, normalizedAns, _settings.FallbackCategory);
+                // If it's exactly the fallback category name (case-insensitive)
+                if (string.Equals(_settings.FallbackCategory, normalizedResponse, StringComparison.OrdinalIgnoreCase))
+                {
+                    _logger.LogInformation("AI explicitly chose fallback category: '{FallbackCategory}'.", _settings.FallbackCategory);
+                    return (_settings.FallbackCategory, tokensUsed);
+                }
+
+                _logger.LogWarning("AI response '{RawAiResponse}' (normalized to '{NormalizedResponse}') could not be mapped to a known category key. Falling back to '{Fallback}'.", rawAiResponse, normalizedResponse, _settings.FallbackCategory);
                 return (_settings.FallbackCategory, tokensUsed);
             }
         }
 
-        // GEWIJZIGD: Retourneert nu (string filename, int tokens) en accepteert IProgress
         private async Task<(string filename, int tokens)> GenerateFilenameAsync(string text, string originalFilename, string category, IProgress<string>? progress, CancellationToken ct)
         {
             string relevantText = text[..Math.Min(text.Length, _settings.MaxPromptChars)];
-            int tokensUsed = 0; // Token teller voor deze call
+            int tokensUsed = 0;
 
             string prompt =
                 "Suggest a highly descriptive, concise, and human-readable filename (without extension) for the following document content.\n" +
@@ -229,30 +274,29 @@ namespace AI_bestandsorganizer
                 "Avoid generic terms like 'document', 'scan', 'report' unless they are part of a specific, meaningful title within the content.\n" +
                 "The original filename was '{originalFilename}'.\n" +
                 "Ensure the name is suitable for file paths (no invalid characters like \\ / : * ? \" < > |), keep it under 60 characters, and use underscores or hyphens for spaces.\n" +
-                "BELANGRIJK: Antwoord ALLEEN met de voorgestelde bestandsnaam, zonder extra tekst of uitleg.\n\n" +
-                "Documentinhoud:\n" +
+                "IMPORTANT: Respond ONLY with the suggested filename, without any extra text or explanation.\n\n" + // Changed "BELANGRIJK" to "IMPORTANT" for consistency if the model prefers English for instructions
+                "Document content:\n" +
                 relevantText;
 
-            _logger.LogDebug("Filename Prompt voor AI:\n{Prompt}", prompt);
+            _logger.LogDebug("Filename Prompt for AI:\n{Prompt}", prompt);
 
             var model = _google.GenerativeModel(_settings.ModelName);
             string? ans = null;
-            GenerateContentResponse? result = null; // Hou de response bij
+            GenerateContentResponse? result = null;
             try
             {
                 result = await model.GenerateContent(prompt, cancellationToken: ct);
                 ans = result.Text?.Trim();
-                tokensUsed = result.UsageMetadata?.TotalTokenCount ?? 0; // Haal tokens op
+                tokensUsed = result.UsageMetadata?.TotalTokenCount ?? 0;
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Fout bij aanroepen van Gemini API voor bestandsnaam generatie.");
+                _logger.LogError(ex, "Error calling Gemini API for filename generation.");
                 progress?.Report($"⚠️ API error during filename generation: {ex.Message}");
             }
 
-            _logger.LogDebug("Ruwe AI-antwoord (bestandsnaam): '{Ans}'", ans);
-            _logger.LogDebug("Tokens gebruikt voor bestandsnaam: {Tokens}", tokensUsed);
-
+            _logger.LogDebug("Raw AI response (filename): '{Ans}'", ans);
+            _logger.LogDebug("Tokens used for filename: {Tokens}", tokensUsed);
 
             if (string.IsNullOrEmpty(ans))
             {
@@ -261,7 +305,7 @@ namespace AI_bestandsorganizer
             }
 
             string sanitizedAns = SanitizeFilename(ans);
-            _logger.LogDebug("Gesaneerde bestandsnaam: '{SanitizedAns}'", sanitizedAns);
+            _logger.LogDebug("Sanitized filename: '{SanitizedAns}'", sanitizedAns);
 
             string finalFilename = string.IsNullOrEmpty(sanitizedAns) ? Path.GetFileNameWithoutExtension(originalFilename) : sanitizedAns;
             return (finalFilename, tokensUsed);
@@ -272,12 +316,18 @@ namespace AI_bestandsorganizer
             if (string.IsNullOrWhiteSpace(filename)) return string.Empty;
             char[] invalidChars = Path.GetInvalidFileNameChars().Concat(Path.GetInvalidPathChars()).Distinct().ToArray();
             string sanitized = new string(filename.Select(c => invalidChars.Contains(c) ? '_' : c).ToArray());
-            sanitized = sanitized.Trim().Replace(" ", "_").Replace("__", "_").Replace("__", "_");
+            sanitized = sanitized.Trim().Replace(" ", "_");
+
+            // Replace multiple underscores with a single one
+            sanitized = Regex.Replace(sanitized, @"_+", "_");
+
             if (sanitized.StartsWith("_")) sanitized = sanitized.Substring(1);
             if (sanitized.EndsWith("_")) sanitized = sanitized.Substring(0, sanitized.Length - 1);
-            if (sanitized.Length > 100)
+
+            if (sanitized.Length > 100) // Keep filename length reasonable
             {
                 sanitized = sanitized.Substring(0, 100);
+                // Re-check for trailing underscore after truncation
                 if (sanitized.EndsWith("_")) sanitized = sanitized.Substring(0, sanitized.Length - 1);
             }
             return sanitized;
@@ -289,7 +339,7 @@ namespace AI_bestandsorganizer
             if (ext is ".txt" or ".md")
             {
                 try { return await File.ReadAllTextAsync(fi.FullName).ConfigureAwait(false); }
-                catch (Exception ex) { _logger.LogError(ex, "Fout bij lezen van tekstbestand {File}", fi.Name); return string.Empty; }
+                catch (Exception ex) { _logger.LogError(ex, "Error reading text file {File}", fi.Name); return string.Empty; }
             }
             if (ext == ".docx")
             {
@@ -303,8 +353,8 @@ namespace AI_bestandsorganizer
                             sb.Append(t.Text).Append(' ');
                     }
                 }
-                catch (Exception ex) { _logger.LogError(ex, "Fout bij extraheren van tekst uit DOCX {File}", fi.Name); }
-                return sb.ToString();
+                catch (Exception ex) { _logger.LogError(ex, "Error extracting text from DOCX {File}", fi.Name); }
+                return sb.ToString().Trim(); // Added Trim()
             }
             if (ext == ".pdf")
             {
@@ -315,8 +365,8 @@ namespace AI_bestandsorganizer
                     foreach (PdfPage p in pdf.GetPages())
                         sb.Append(p.Text).Append(' ');
                 }
-                catch (Exception ex) { _logger.LogError(ex, "Fout bij extraheren van tekst uit PDF {File}", fi.Name); }
-                return sb.ToString();
+                catch (Exception ex) { _logger.LogError(ex, "Error extracting text from PDF {File}", fi.Name); }
+                return sb.ToString().Trim(); // Added Trim()
             }
             return string.Empty;
         }
