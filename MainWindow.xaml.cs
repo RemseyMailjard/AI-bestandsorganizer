@@ -126,10 +126,20 @@ namespace AI_bestandsorganizer
                     };
                 }
 
-                (int processed, int moved) = await _organizer.OrganizeAsync(
+                // Ná  (negeert het 3e tuple-element)
+                // 1️⃣  Bewaar het derde tuple-element (tokens)
+                (int processed, int moved, long tokensUsed) = await _organizer.OrganizeAsync(
                     SrcBox.Text, DstBox.Text, confirmer, progress, _cts.Token);
 
+                // 2️⃣  Toon resultaat in log
                 Log($"✅ Klaar! {moved}/{processed} bestanden verplaatst.");
+
+                // 3️⃣  Update de TextBlock op de UI-thread
+                TokenUsageTextBlock.Text = $"Tokens used: {tokensUsed:N0}";
+
+
+           
+
             }
             catch (OperationCanceledException)
             {

@@ -40,6 +40,8 @@
                 <RowDefinition Height="Auto"/>
                 <!-- Run button -->
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <!-- Token usage -->
                 <!-- Footer -->
             </Grid.RowDefinitions>
 
@@ -72,10 +74,12 @@
             <!-- Model -->
             <StackPanel Orientation="Horizontal" Grid.Row="4" Margin="0,0,0,6">
                 <TextBlock Text="Model:" VerticalAlignment="Center" Margin="0,0,10,0"/>
-                <ComboBox x:Name="ModelBox" Width="160">
-                    <ComboBoxItem Content="gemini-1.0-pro" IsSelected="True"/>
-                    <ComboBoxItem Content="gemini-1.5-pro"/>
-                    <ComboBoxItem Content="gemini-1.5-flash"/>
+                <ComboBox x:Name="ModelBox" Width="200">
+                    <ComboBoxItem Content="gemini-2.5-pro" IsSelected="True"/>
+                    <ComboBoxItem Content="gemini-2.5-flash"/>
+                    <ComboBoxItem Content="gemini-1.5-pro-latest"/>
+                    <ComboBoxItem Content="gemini-1.5-flash-latest"/>
+                    <ComboBoxItem Content="gemini-1.0-pro-002"/>
                 </ComboBox>
             </StackPanel>
 
@@ -87,7 +91,11 @@
             <!-- Log output -->
             <ui:TextBox x:Name="LogBox" Grid.Row="6" VerticalScrollBarVisibility="Auto"
                         AcceptsReturn="True" IsReadOnly="True" TextWrapping="Wrap" Height="120"/>
+            <!-- Token usage display -->
+            <TextBlock x:Name="TokenUsageTextBlock" Grid.Row="8" Text="Tokens used: 0" Margin="0,4,0,0"
+                       HorizontalAlignment="Left" Opacity="0.8"/>
 
+            <!-- Footer -->
             <!-- Run button -->
             <ui:Button x:Name="RunButton" Content="Start" Appearance="Primary" Width="90" Height="32"
                        Grid.Row="7" HorizontalAlignment="Right" Click="Run_Click"/>
