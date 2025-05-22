@@ -40,7 +40,7 @@ namespace AI_bestandsorganizer
         private void ProcessAndClose(string chosenName)
         {
             // Sanitize the chosen name before returning
-            string sanitizedName = AIFileOrganizer.SanitizeFilename(chosenName);
+            string sanitizedName = FileUtils.SanitizeFilename(chosenName);
 
             if (string.IsNullOrWhiteSpace(sanitizedName))
             {

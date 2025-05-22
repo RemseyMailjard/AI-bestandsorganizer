@@ -26,7 +26,10 @@ using Microsoft.Extensions.Options;
 using Mscc.GenerativeAI;                         // Google Gemini
 using Azure;
 using Azure.AI.OpenAI;
-using OpenAI.Chat;                           // Azure OpenAI Client
+using OpenAI.Chat;
+using static AI_bestandsorganizer.FileUtils;
+
+// Azure OpenAI Client
 // Note: The using OpenAI; and using OpenAI.Chat; aliases were potentially problematic
 // if you also used the official OpenAI SDK. Direct usage of Azure.AI.OpenAI types is clearer.
 
@@ -342,14 +345,14 @@ namespace AI_bestandsorganizer
                         {
                             _log.LogDebug($"Genereren bestandsnaam voor {fi.Name} (categorie KEY: {categoryKey}).");
                             string suggestion = await GenerateFilenameAsync(extractedText, fi.Name, categoryKey, ct);
-                            aiSuggestedFilename = SanitizeAsFilename(suggestion); // Use specific sanitize for filenames
+                            aiSuggestedFilename = FileUtils.SanitizeAsFilename(suggestion); // Use specific sanitize for filenames
 
                             if (confirm != null)
                             {
-                                currentBaseName = SanitizeAsFilename(currentBaseName); // Sanitize original base name once before confirmation
+                                currentBaseName = FileUtils.SanitizeAsFilename(currentBaseName); // Sanitize original base name once before confirmation
                                 _log.LogDebug($"AI suggestie: '{aiSuggestedFilename}', Origineel (gesaneerd): '{currentBaseName}'. Wachten op bevestiging.");
                                 currentBaseName = await confirm(currentBaseName, aiSuggestedFilename, progress);
-                                currentBaseName = SanitizeAsFilename(currentBaseName); // Sanitize user's final choice
+                                currentBaseName = FileUtils.SanitizeAsFilename(currentBaseName); // Sanitize user's final choice
                                 _log.LogInformation($"Gebruiker koos bestandsnaam: '{currentBaseName}' voor {fi.Name}.");
                             }
                             else // Auto-apply if no confirm handler
@@ -360,14 +363,14 @@ namespace AI_bestandsorganizer
                         }
                         else
                         {
-                            currentBaseName = SanitizeAsFilename(currentBaseName); // Sanitize original even if not renaming with AI
+                            currentBaseName = FileUtils.SanitizeAsFilename(currentBaseName); // Sanitize original even if not renaming with AI
                         }
                     }
                     else
                     {
                         _log.LogWarning($"Geen tekst geëxtraheerd uit {fi.Name}. Gebruik fallback categorie KEY: '{categoryKey}'.");
                         progress?.Report($"⚠️ Geen tekst uit {fi.Name}, gebruik fallback: {categoryKey}");
-                        currentBaseName = SanitizeAsFilename(currentBaseName); // Sanitize original filename
+                        currentBaseName = FileUtils.SanitizeAsFilename(currentBaseName); // Sanitize original filename
                     }
                 }
                 catch (OperationCanceledException) { throw; } // Re-throw cancellation
@@ -517,7 +520,7 @@ namespace AI_bestandsorganizer
                 ans = _cfg.Provider switch
                 {
                     LlmProvider.Gemini => await AskGeminiAsync(prompt, ct),
-                    LlmProvider.AzureOpenAI => await AskAzureAsync(prompt, ct),
+                    LlmProvider.AzureOpenAI => await AskAzureAsync(_azureClient, _cfg.AzureDeployment, prompt, _cfg.SystemPrompt, ct),
                     LlmProvider.OpenAI => await AskOpenAiAsync(prompt, ct),
                     _ => null // Should have been caught by initial check
                 };
@@ -584,7 +587,7 @@ namespace AI_bestandsorganizer
                 ans = _cfg.Provider switch
                 {
                     LlmProvider.Gemini => await AskGeminiAsync(prompt, ct),
-                    LlmProvider.AzureOpenAI => await AskAzureAsync(prompt, ct),
+                    LlmProvider.AzureOpenAI => await AskAzureAsync(_azureClient, _cfg.AzureDeployment, prompt, _cfg.SystemPrompt, ct),
                     LlmProvider.OpenAI => await AskOpenAiAsync(prompt, ct),
                     _ => null
                 };
@@ -608,6 +611,8 @@ namespace AI_bestandsorganizer
             return sanitizedSuggestion; // Return the sanitized suggestion
         }
 
+     
+
         private async Task<string?> AskGeminiAsync(string prompt, CancellationToken ct)
         {
             if (_geminiClient == null) return null;
@@ -616,100 +621,143 @@ namespace AI_bestandsorganizer
 
             var model = _geminiClient.GenerativeModel(_cfg.ModelName);
 
-            // Aangepast naar Task.Run omdat GenerateContent synchron is.
-            var response = await Task.Run(() => model.GenerateContent(prompt), ct);
-
-            return response.Text?.Trim();
-        }
-
-
-        private async Task<string?> AskAzureAsync(string prompt, CancellationToken ct)
-        {
-            if (_azureClient == null || string.IsNullOrWhiteSpace(_cfg.AzureDeployment))
+            try
             {
-                _log.LogError("Azure client or AzureDeployment is not initialized for AskAzureAsync.");
+                var start = DateTime.UtcNow;
+                var response = await Task.Run(() => model.GenerateContent(prompt), ct);
+                var duration = DateTime.UtcNow - start;
+
+                _log.LogInformation($"Gemini antwoord ontvangen in {duration.TotalMilliseconds} ms.");
+                _log.LogDebug($"Gemini response tokens approx. (schatting): prompt={prompt.Length / 4}, response={response.Text?.Length / 4}");
+
+                return response.Text?.Trim();
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, $"Fout tijdens Gemini API-aanroep.");
                 return null;
             }
-
-            _log.LogInformation($"Requesting Azure OpenAI deployment: {_cfg.AzureDeployment}.");
-            var chatClient = _azureClient.GetChatClient(_cfg.AzureDeployment);
-
-            // Construct the chat messages
-            var chatMessages = new List<OpenAI.Chat.ChatMessage>
-                        {
-                            new SystemChatMessage(_cfg.SystemPrompt),
-                            new UserChatMessage(prompt)
-                        };
-
-            // Send the chat completion request
-            var response = await chatClient.CompleteChatAsync(chatMessages, cancellationToken: ct);
-
-            // Return the response content
-            return response.ToString();
         }
+
         private async Task<string?> AskOpenAiAsync(string prompt, CancellationToken ct)
         {
             if (_openAIHttpClient == null)
             {
-                _log.LogError("OpenAI HTTP client is niet geïnitialiseerd voor AskOpenAiAsync.");
+                _log.LogError("OpenAI HTTP client is niet geïnitialiseerd.");
                 return null;
             }
-            _log.LogInformation($"Verzoek naar OpenAI model: {_cfg.ModelName} via endpoint: {_cfg.OpenAICompletionsEndpoint}");
+
             var requestBody = new
             {
                 model = _cfg.ModelName,
                 messages = new[]
                 {
-                    new { role = "system", content = _cfg.SystemPrompt },
-                    new { role = "user", content = prompt }
-                },
+            new { role = "system", content = _cfg.SystemPrompt },
+            new { role = "user", content = prompt }
+        },
                 max_tokens = _cfg.MaxCompletionTokens,
                 temperature = _cfg.Temperature,
-                // top_p = _cfg.TopP, // If you add TopP to settings
             };
 
-            HttpContent httpContent = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json");
-            HttpResponseMessage responseMessage;
+            var content = new StringContent(JsonSerializer.Serialize(requestBody), Encoding.UTF8, "application/json");
+
             try
             {
-                responseMessage = await _openAIHttpClient.PostAsync(_cfg.OpenAICompletionsEndpoint, httpContent, ct);
+                var start = DateTime.UtcNow;
+                var response = await _openAIHttpClient.PostAsync(_cfg.OpenAICompletionsEndpoint, content, ct);
+                var duration = DateTime.UtcNow - start;
+
+                string responseJson = await response.Content.ReadAsStringAsync(ct);
+                _log.LogInformation($"OpenAI antwoord ontvangen in {duration.TotalMilliseconds} ms voor model: {_cfg.ModelName}");
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    _log.LogError($"OpenAI fout {response.StatusCode}: {responseJson}");
+                    return null;
+                }
+
+                using var jsonDoc = JsonDocument.Parse(responseJson);
+                var root = jsonDoc.RootElement;
+
+                // Log tokens if present
+                if (root.TryGetProperty("usage", out var usage))
+                {
+                    _log.LogDebug($"Tokens gebruikt: prompt={usage.GetProperty("prompt_tokens")}, completion={usage.GetProperty("completion_tokens")}, totaal={usage.GetProperty("total_tokens")}");
+                }
+
+                return root.GetProperty("choices")[0].GetProperty("message").GetProperty("content").GetString()?.Trim();
             }
-            catch (HttpRequestException ex)
+            catch (Exception ex)
             {
-                _log.LogError(ex, $"Netwerkfout bij aanroep OpenAI API naar {_cfg.OpenAICompletionsEndpoint}.");
+                _log.LogError(ex, "Fout tijdens OpenAI API-aanroep.");
                 return null;
             }
+        }
 
 
-            if (!responseMessage.IsSuccessStatusCode)
-            {
-                string errorContent = await responseMessage.Content.ReadAsStringAsync(ct);
-                _log.LogError($"OpenAI API fout: {responseMessage.StatusCode} ({(int)responseMessage.StatusCode}). Respons: {errorContent}");
-                // Consider not throwing here to allow fallback, or handle specific retryable errors
-                return null; // Indicate failure
-            }
 
-            try
-            {
-                using var jsonDoc = await JsonDocument.ParseAsync(await responseMessage.Content.ReadAsStreamAsync(ct), cancellationToken: ct);
-                if (jsonDoc.RootElement.TryGetProperty("choices", out var choices) && choices.GetArrayLength() > 0)
-                {
-                    if (choices[0].TryGetProperty("message", out var message) && message.TryGetProperty("content", out var content))
-                    {
-                        return content.GetString()?.Trim();
-                    }
-                }
-            }
-            catch (JsonException jEx)
-            {
-                _log.LogError(jEx, "Fout bij parsen JSON respons van OpenAI API.");
-                _log.LogDebug($"Raw JSON response from OpenAI: {await responseMessage.Content.ReadAsStringAsync(ct)}");
-            }
-            _log.LogWarning("OpenAI API gaf geen valide 'choices[0].message.content' terug.");
+public async Task<string?> AskAzureAsync(
+    AzureOpenAIClient azureClient,
+    string deploymentName,
+    string userPrompt,
+    string systemPrompt,
+    CancellationToken ct)
+    {
+        if (azureClient == null || string.IsNullOrWhiteSpace(deploymentName))
+        {
+            _log.LogError("Azure client of deployment niet correct geïnitialiseerd.");
             return null;
         }
 
-        private async Task<string> ExtractTextAsync(FileInfo fi, CancellationToken ct)
+        try
+        {
+            // Maak de ChatClient aan
+            ChatClient chatClient = azureClient.GetChatClient(deploymentName);
+
+            // Bouw het chatverloop op
+            var messages = new List<OpenAI.Chat.ChatMessage>();
+            if (!string.IsNullOrWhiteSpace(systemPrompt))
+                messages.Add(new SystemChatMessage(systemPrompt));
+
+            messages.Add(new UserChatMessage(userPrompt));
+
+            // (Optioneel) voeg eerdere assistant-berichten toe voor context
+
+            var start = DateTime.UtcNow;
+
+            // Maak een completions request
+            ChatCompletion completion = await chatClient.CompleteChatAsync(messages, cancellationToken: ct);
+
+            var duration = DateTime.UtcNow - start;
+            _log.LogInformation($"Azure OpenAI antwoord ontvangen in {duration.TotalMilliseconds} ms voor deployment: {deploymentName}");
+
+            // Log token usage indien aanwezig
+            if (completion.Usage is not null)
+            {
+                _log.LogDebug($"Tokens gebruikt: prompt={completion.Usage.ToString()}, completion={completion.Usage.ToString()}, totaal={completion.Usage.ToString()}");
+            }
+
+            // Haal het eerste assistant-antwoord op (er kan maar één zijn bij 1 vraag)
+            string? result = completion.Content?[0]?.Text?.Trim();
+
+            return result;
+        }
+        catch (RequestFailedException ex)
+        {
+            _log.LogError(ex, $"Azure SDK Fout tijdens Azure OpenAI aanroep. Status: {ex.Status}, ErrorCode: {ex.ErrorCode}, Details: {ex.Message}");
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Algemene fout tijdens Azure OpenAI aanroep.");
+            return null;
+        }
+    }
+
+
+
+
+    private async Task<string> ExtractTextAsync(FileInfo fi, CancellationToken ct)
         {
             string ext = fi.Extension.ToLowerInvariant();
             _log.LogDebug($"Starten tekst extractie voor {fi.Name} (extensie: {ext})");
@@ -871,15 +919,7 @@ namespace AI_bestandsorganizer
             return string.IsNullOrWhiteSpace(result) ? SanitizePart("Default_Path") : result;
         }
 
-        public static string SanitizeAsFilename(string inputFilenameWithoutExtension)
-        {
-            return SanitizePart(inputFilenameWithoutExtension); // Filenames are like single path parts
-        }
-
-        internal static string SanitizeFilename(string input)
-        {
-            throw new NotImplementedException();
-        }
+       
     }
 
     internal static class OcrHelper // Keep as internal or make public if called from elsewhere

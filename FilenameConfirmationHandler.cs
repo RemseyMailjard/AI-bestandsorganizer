@@ -37,7 +37,7 @@ public static class UserInteraction
             else
             {
                 // User provided a new name
-                string sanitizedInput = AIFileOrganizer.SanitizeFilename(input); // Re-use the sanitizer
+                string sanitizedInput = FileUtils.SanitizeFilename(input); // Re-use the sanitizer
                 if (string.IsNullOrWhiteSpace(sanitizedInput))
                 {
                     output("Invalid name entered. Please try again.");
