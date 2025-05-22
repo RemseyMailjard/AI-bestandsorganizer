@@ -362,3 +362,28 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 appsettings.json
+# WPF/XAML auto-generated files
+*.g.cs
+*.g.i.cs
+*.baml
+
+# AppSettings (optioneel, als je development config niet wilt committen)
+appsettings.*.json
+!appsettings.json
+
+# Project/VS artefacts (oud of niet altijd standaard)
+*.vshost.*
+*.bak
+*.swp
+*.swn
+*.dmp
+
+# SonarQube / analyzer output
+.sonarqube/
+.analyzers/
+TestResults/
+Coverage/
+
+# .NET local tools/config
+.dotnet/
+.tools/

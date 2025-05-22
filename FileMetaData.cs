@@ -6,5 +6,7 @@ using System.Threading.Tasks;
 
 namespace AI_bestandsorganizer
 {
-   
+    internal class FileMeta
+    {
+    }
 }
