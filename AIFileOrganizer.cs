@@ -474,30 +474,61 @@ namespace AI_bestandsorganizer
             _log.LogInformation($"Organisatie voltooid. {movedCount}/{proc} bestanden verplaatst.");
             return (proc, movedCount);
         }
-    
-            private async Task<string> GenerateFilenameAsync(string text, string originalFilename, string categoryKey, CancellationToken ct)
+
+        private async Task<string> GenerateFilenameAsync(string text, string originalFilename, string categoryKey, CancellationToken ct)
+        {
+            string originalBaseName = Path.GetFileNameWithoutExtension(originalFilename);
+
+            if (_geminiClient == null && _azureClient == null && _openAIHttpClient == null)
             {
-                string originalBaseName = Path.GetFileNameWithoutExtension(originalFilename);
-                if (_geminiClient == null && _azureClient == null && _openAIHttpClient == null)
-                {
-                    _log.LogWarning("Geen LLM provider geconfigureerd voor bestandsnaam generatie. Gebruik originele gesaneerde naam.");
-                    return FileUtils.SanitizeAsFilename(originalBaseName);
-                }
-                // ... (rest of the method, ensure FileUtils.SanitizeAsFilename is used for the result and fallback)
-                string prompt = $"{_cfg.SystemPrompt}\n\nGegeven de volgende tekst en de categorie '{_cfg.Categories.GetValueOrDefault(categoryKey, categoryKey)}', " +
-                                $"stel een korte, beschrijvende, Engelse bestandsnaam voor (alleen letters, cijfers, underscores; geen spaties of speciale tekens; geen bestandsextensie). " +
-                                $"De originele bestandsnaam was '{originalBaseName}'. Focus op de kerninhoud en houd het beknopt (maximaal 5-7 woorden).\n\n" +
-                                $"Tekst:\n\"\"\"\n{text[..Math.Min(text.Length, _cfg.MaxPromptCharsFilename)]}\n\"\"\"";
-                string? ans = null; // ... LLM call ...
-                                    // ... (LLM call logic as before) ...
-                if (string.IsNullOrWhiteSpace(ans))
-                {
-                    return FileUtils.SanitizeAsFilename(originalBaseName);
-                }
-                return FileUtils.SanitizeAsFilename(ans.Trim());
+                _log.LogWarning("Geen LLM provider geconfigureerd voor bestandsnaam generatie. Gebruik originele gesaneerde naam.");
+                return FileUtils.SanitizeAsFilename(originalBaseName);
             }
 
-            private async Task<string> GenerateFolderPathAsync(string text, string classifiedCategoryKey, string predefinedBasePathHint, CancellationToken ct)
+            string category = _cfg.Categories.GetValueOrDefault(categoryKey, categoryKey);
+            string textSnippet = text[..Math.Min(text.Length, _cfg.MaxPromptCharsFilename)];
+
+            string prompt =
+        $"""
+Je bent een taalmodel dat bestandsnamen genereert op basis van tekstinhoud en een opgegeven categorie. Gebruik de contextuele kern van de tekst en de betekenis van de categorie om een korte, betekenisvolle bestandsnaam voor te stellen.
+
+Beperkingen:
+- Gebruik alleen Nederlandse woorden.
+- Alleen letters, cijfers en underscores zijn toegestaan (a-z, A-Z, 0-9, _); geen spaties, streepjes of speciale tekens.
+- Geef geen bestandsextensie mee.
+- Houd de naam kort en informatief (max. 5–7 woorden).
+- Focus op de essentie van de inhoud.
+- Indien de inhoud onduidelijk is of de categorie onbekend, stel dan een generieke maar geldige naam voor.
+- Geen dubbele woorden of afkortingen tenzij betekenisvol.
+
+Je krijgt een tekstfragment en een categorienaam. Bedenk een beschrijvende, Nederlandstalige bestandsnaam op basis van de inhoud en de categorie. De oorspronkelijke bestandsnaam was '{originalBaseName}'.
+
+Categorie: {category}
+
+Tekst:
+\"\"\"
+{textSnippet}
+\"\"\"
+
+Genereer nu een voorstel voor een bestandsnaam.
+""";
+
+            string? ans = null;
+
+            // Hier volgt je bestaande logica voor het aanroepen van LLM, bijv. via _openAIHttpClient, _geminiClient, etc.
+            // Voorbeeld:
+            // ans = await _openAIHttpClient.GetChatCompletionAsync(prompt, ct);
+
+            if (string.IsNullOrWhiteSpace(ans))
+            {
+                return FileUtils.SanitizeAsFilename(originalBaseName);
+            }
+
+            return FileUtils.SanitizeAsFilename(ans.Trim());
+        }
+
+
+        private async Task<string> GenerateFolderPathAsync(string text, string classifiedCategoryKey, string predefinedBasePathHint, CancellationToken ct)
             {
                 if (_geminiClient == null && _azureClient == null && _openAIHttpClient == null)
                 {
