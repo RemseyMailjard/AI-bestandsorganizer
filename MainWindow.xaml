@@ -28,7 +28,7 @@
         <!-- Iets lichter dan primary, maar nog steeds donker -->
 
 
-        <!-- Globale Stijlen voor alle elementen -->
+        <!-- Styles (Keep all your existing styles as they are good) -->
         <Style TargetType="Window">
             <Setter Property="Background" Value="{StaticResource PrimaryBackground}"/>
             <Setter Property="Foreground" Value="{StaticResource ForegroundColor}"/>
@@ -37,14 +37,12 @@
             <Setter Property="FontFamily" Value="Segoe UI"/>
             <Setter Property="FontSize" Value="13"/>
         </Style>
-
         <Style TargetType="Label">
             <Setter Property="Foreground" Value="{StaticResource ForegroundColor}"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
             <Setter Property="Margin" Value="0,0,5,0"/>
             <Setter Property="FontWeight" Value="SemiBold"/>
         </Style>
-
         <Style TargetType="TextBox">
             <Setter Property="Background" Value="{StaticResource InputBackground}"/>
             <Setter Property="Foreground" Value="{StaticResource ForegroundColor}"/>
@@ -75,8 +73,6 @@
                 </Setter.Value>
             </Setter>
         </Style>
-
-        <!-- Aparte stijl voor PasswordBox -->
         <Style TargetType="PasswordBox">
             <Setter Property="Background" Value="{StaticResource InputBackground}"/>
             <Setter Property="Foreground" Value="{StaticResource ForegroundColor}"/>
@@ -106,8 +102,6 @@
                 </Setter.Value>
             </Setter>
         </Style>
-
-        <!-- BELANGRIJK: Deze stijl MOET BOVEN de ComboBox stijl staan! -->
         <Style x:Key="ComboBoxToggleButtonStyle" TargetType="ToggleButton">
             <Setter Property="Template">
                 <Setter.Value>
@@ -127,7 +121,6 @@
                 </Setter.Value>
             </Setter>
         </Style>
-
         <Style TargetType="ComboBox">
             <Setter Property="Background" Value="{StaticResource InputBackground}"/>
             <Setter Property="Foreground" Value="{StaticResource ForegroundColor}"/>
@@ -182,7 +175,6 @@
                 </Setter.Value>
             </Setter>
         </Style>
-
         <Style TargetType="ComboBoxItem">
             <Setter Property="Foreground" Value="{StaticResource ForegroundColor}"/>
             <Setter Property="Background" Value="Transparent"/>
@@ -207,7 +199,6 @@
                 </Setter.Value>
             </Setter>
         </Style>
-
         <Style TargetType="Button">
             <Setter Property="Background" Value="{StaticResource SecondaryBackground}"/>
             <Setter Property="Foreground" Value="{StaticResource ForegroundColor}"/>
@@ -249,8 +240,6 @@
                 </Setter.Value>
             </Setter>
         </Style>
-
-        <!-- Specifieke stijl voor de 'Organiseer' knop -->
         <Style x:Key="OrganizeButtonStyle" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
             <Setter Property="Background" Value="{StaticResource AccentColor}"/>
             <Setter Property="BorderBrush" Value="{StaticResource AccentColor}"/>
@@ -291,7 +280,6 @@
                 </Setter.Value>
             </Setter>
         </Style>
-
         <Style TargetType="CheckBox">
             <Setter Property="Foreground" Value="{StaticResource ForegroundColor}"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
@@ -325,7 +313,6 @@
                 </Setter.Value>
             </Setter>
         </Style>
-
         <Style TargetType="TextBlock">
             <Setter Property="Foreground" Value="{StaticResource ForegroundColor}"/>
             <Setter Property="VerticalAlignment" Value="Center"/>
@@ -333,103 +320,104 @@
     </Window.Resources>
 
     <Grid Margin="20">
-        <!-- ───── Grid-lay-out ───── -->
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
-            <!-- API-key -->
+            <!-- 0: API-key -->
             <RowDefinition Height="Auto"/>
-            <!-- Provider -->
+            <!-- 1: Provider -->
             <RowDefinition Height="Auto"/>
-            <!-- Model -->
+            <!-- 2: Model -->
             <RowDefinition Height="Auto"/>
-            <!-- Endpoint -->
+            <!-- 3: Endpoint -->
             <RowDefinition Height="Auto"/>
-            <!-- Deployment -->
+            <!-- 4: Deployment -->
             <RowDefinition Height="Auto"/>
-            <!-- Source -->
+            <!-- 5: Source -->
             <RowDefinition Height="Auto"/>
-            <!-- Destination -->
+            <!-- 6: Destination -->
             <RowDefinition Height="Auto"/>
-            <!-- Rename chk -->
+            <!-- 7: RenameChk -->
+            <RowDefinition Height="Auto"/>
+            <!-- 8: MetadataChk -->
+            <RowDefinition Height="Auto"/>
+            <!-- 9: Log Label + Export Button -->
             <RowDefinition Height="*"/>
-            <!-- Log -->
+            <!-- 10: LogBox -->
             <RowDefinition Height="Auto"/>
-            <!-- Run -->
+            <!-- 11: Organiseer Button -->
             <RowDefinition Height="Auto"/>
-            <!-- Footer -->
+            <!-- 12: Footer -->
         </Grid.RowDefinitions>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="Auto"/>
+            <!-- Labels -->
             <ColumnDefinition Width="*"/>
+            <!-- Inputs / Controls -->
             <ColumnDefinition Width="Auto"/>
+            <!-- Browse Buttons -->
         </Grid.ColumnDefinitions>
 
-        <!-- 0️⃣ API-key (generiek) -->
+        <!-- Row 0: API-key -->
         <Label Grid.Row="0" Grid.Column="0" Content="API-key:"/>
-        <PasswordBox x:Name="ApiKeyBox" Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="2"
-                     Margin="0,0,0,8"/>
+        <PasswordBox x:Name="ApiKeyBox" Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8"/>
 
-        <!-- 1️⃣ Provider -->
+        <!-- Row 1: Provider -->
         <Label Grid.Row="1" Grid.Column="0" Content="Provider:"/>
-        <ComboBox x:Name="ProviderBox" Grid.Row="1" Grid.Column="1" Width="180" Margin="0,0,0,8"
-                  SelectionChanged="ProviderBox_SelectionChanged">
-            <ComboBoxItem Content="Gemini"        IsSelected="True"/>
+        <ComboBox x:Name="ProviderBox" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Width="Auto" HorizontalAlignment="Left" MinWidth="180" Margin="0,0,0,8" SelectionChanged="ProviderBox_SelectionChanged">
+            <ComboBoxItem Content="Gemini" IsSelected="True"/>
             <ComboBoxItem Content="Azure OpenAI"/>
             <ComboBoxItem Content="OpenAI"/>
         </ComboBox>
 
-        <!-- 2️⃣ Model (wordt dynamisch gevuld) -->
+        <!-- Row 2: Model -->
         <Label Grid.Row="2" Grid.Column="0" Content="Model:"/>
-        <ComboBox x:Name="ModelBox" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Width="220"
-                  Margin="0,0,0,8">
-            <!-- Default waarden voor Gemini -->
+        <ComboBox x:Name="ModelBox" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Width="Auto" HorizontalAlignment="Left" MinWidth="220" Margin="0,0,0,8">
             <ComboBoxItem Content="gemini-1.5-pro-latest" IsSelected="True"/>
-            <ComboBoxItem Content="gemini-2.5-pro-preview"/>
+            <ComboBoxItem Content="gemini-1.5-flash-latest"/>
         </ComboBox>
 
-        <!-- 3️⃣ Azure Endpoint -->
-        <Label x:Name="LblEndpoint" Grid.Row="3" Grid.Column="0" Content="Azure endpoint:"
-               Visibility="Collapsed"/>
-        <TextBox x:Name="EndpointBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2"
-                 Margin="0,0,0,8" Visibility="Collapsed"/>
+        <!-- Row 3: Azure Endpoint -->
+        <Label x:Name="LblEndpoint" Grid.Row="3" Grid.Column="0" Content="Azure endpoint:" Visibility="Collapsed"/>
+        <TextBox x:Name="EndpointBox" Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Visibility="Collapsed"/>
 
-        <!-- 4️⃣ Azure Deployment -->
-        <Label x:Name="LblDeploy" Grid.Row="4" Grid.Column="0" Content="Deployment:"
-               Visibility="Collapsed"/>
-        <TextBox x:Name="DeployBox" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2"
-                 Margin="0,0,0,8" Visibility="Collapsed"/>
+        <!-- Row 4: Azure Deployment -->
+        <Label x:Name="LblDeploy" Grid.Row="4" Grid.Column="0" Content="Deployment:" Visibility="Collapsed"/>
+        <TextBox x:Name="DeployBox" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8" Visibility="Collapsed"/>
 
-        <!-- 5️⃣ Source -->
+        <!-- Row 5: Source -->
         <Label Grid.Row="5" Grid.Column="0" Content="Bronmap:"/>
         <TextBox x:Name="SrcBox" Grid.Row="5" Grid.Column="1" Margin="0,0,6,8"/>
-        <Button Content="…" Grid.Row="5" Grid.Column="2" Width="30" Margin="0,0,0,8"
-                Click="BrowseSrc"/>
+        <Button Content="…" Grid.Row="5" Grid.Column="2" Width="30" Margin="0,0,0,8" Click="BrowseSrc"/>
 
-        <!-- 6️⃣ Destination -->
+        <!-- Row 6: Destination -->
         <Label Grid.Row="6" Grid.Column="0" Content="Doelmap:"/>
         <TextBox x:Name="DstBox" Grid.Row="6" Grid.Column="1" Margin="0,0,6,8"/>
-        <Button Content="…" Grid.Row="6" Grid.Column="2" Width="30" Margin="0,0,0,8"
-                Click="BrowseDst"/>
+        <Button Content="…" Grid.Row="6" Grid.Column="2" Width="30" Margin="0,0,0,8" Click="BrowseDst"/>
 
-        <!-- 7️⃣ Rename -->
-        <CheckBox x:Name="RenameChk" Grid.Row="7" Grid.Column="0" Grid.ColumnSpan="3"
-                  Content="Bestanden hernoemen met AI-suggestie" Margin="0,6,0,12"/>
+        <!-- Row 7: Rename CheckBox -->
+        <CheckBox x:Name="RenameChk" Grid.Row="7" Grid.Column="0" Grid.ColumnSpan="3" Content="Bestanden hernoemen met AI-suggestie" Margin="0,6,0,6"/>
 
-        <!-- 8️⃣ Log -->
-        <TextBox x:Name="LogBox" Grid.Row="8" Grid.Column="0" Grid.ColumnSpan="3" Height="120"
-                 Background="{StaticResource LogBackground}" FontFamily="Consolas" FontSize="12"
-                 IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto"
-                 Margin="0,0,0,12"/>
+        <!-- Row 8: Metadata CheckBox -->
+        <CheckBox x:Name="MetadataChk" Grid.Row="8" Grid.Column="0" Grid.ColumnSpan="3" Content="Metadata-bestanden (.json) genereren voor verplaatste items" Margin="0,0,0,12"/>
 
-        <!-- 9️⃣ Run -->
-        <Button Content="Organiseer" Grid.Row="9" Grid.Column="1" Width="120"
+        <!-- Row 9: Log Label and Export Button -->
+        <DockPanel Grid.Row="9" Grid.Column="0" Grid.ColumnSpan="3" Margin="0,0,0,2" LastChildFill="False">
+            <Label Content="Log Output:" DockPanel.Dock="Left" VerticalAlignment="Center"/>
+            <Button Content="Export Log" DockPanel.Dock="Right" Width="100" Padding="8,3" VerticalAlignment="Center"
+                    Click="ExportLog_Click"/>
+        </DockPanel>
+
+        <!-- Row 10: LogBox -->
+        <TextBox x:Name="LogBox" Grid.Row="10" Grid.Column="0" Grid.ColumnSpan="3" Height="120" Background="{StaticResource LogBackground}" FontFamily="Consolas" FontSize="12" IsReadOnly="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Margin="0,0,0,12"/>
+
+        <!-- Row 11: Organiseer Button -->
+        <Button Content="Organiseer" Grid.Row="11" Grid.Column="0" Grid.ColumnSpan="3" 
                 Style="{StaticResource OrganizeButtonStyle}"
-                HorizontalAlignment="Right"
+                HorizontalAlignment="Right" Margin="0,0,0,8"
                 Click="Run_Click"/>
 
-        <!-- 🔟 Footer -->
-        <StackPanel Grid.Row="10" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal"
-                    HorizontalAlignment="Center" Margin="0,10,0,0">
+        <!-- Row 12: Footer -->
+        <StackPanel Grid.Row="12" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal" HorizontalAlignment="Center" Margin="0,10,0,0">
             <TextBlock Text="Made by Remsey Mailjard" Margin="0,0,8,0"/>
             <Button Content="LinkedIn" Width="80" Click="OpenLinkedIn"/>
         </StackPanel>

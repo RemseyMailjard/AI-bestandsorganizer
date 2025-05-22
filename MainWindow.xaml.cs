@@ -13,6 +13,7 @@ using Microsoft.Extensions.Options;
 using SysForms = System.Windows.Forms;
 using WpfMsg = System.Windows.MessageBox;
 using WpfTextBox = System.Windows.Controls.TextBox;
+using Microsoft.Win32;
 
 // Assuming these types are defined in your project:
 // public delegate Task<string> FilenameConfirmationHandler(string originalFilename, string suggestedFilename, IProgress<string>? progressReporter);
@@ -77,6 +78,9 @@ namespace AI_bestandsorganizer
 
             // Ensure <CheckBox x:Name="RenameChk" ... /> exists in XAML
             RenameChk.IsChecked = _settings.EnableFileRenaming;
+
+            // Initialize MetadataChk
+            MetadataChk.IsChecked = _settings.GenerateMetadataFiles;
         }
 
         // ---------- Browse-knoppen ----------
@@ -117,9 +121,12 @@ namespace AI_bestandsorganizer
                 return;
             }
 
-            _settings.ApiKey             = ApiKeyBox.Password; // ApiKeyBox checked
-            _settings.ModelName          = ((ComboBoxItem)ModelBox.SelectedItem)!.Content!.ToString()!; // ModelBox checked
-            _settings.EnableFileRenaming = RenameChk.IsChecked ?? false; // RenameChk checked
+            _settings.ApiKey             = ApiKeyBox.Password; 
+            _settings.ModelName          = ((ComboBoxItem)ModelBox.SelectedItem)!.Content!.ToString()!; 
+            _settings.EnableFileRenaming = RenameChk.IsChecked ?? false; // 
+
+            // Update GenerateMetadataFiles setting
+            _settings.GenerateMetadataFiles = MetadataChk.IsChecked ?? false;
 
             _cts = new CancellationTokenSource();
 
@@ -232,6 +239,42 @@ namespace AI_bestandsorganizer
             if (ModelBox.Items.Count > 0)
             {
                 ((ComboBoxItem)ModelBox.Items[0]).IsSelected = true;
+            }
+        }
+
+        // Add this using statement if not already present for SaveFileDialog
+
+
+
+        private void ExportLog_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrWhiteSpace(LogBox.Text))
+            {
+                WpfMsg.Show("Log is empty, nothing to export.", "Export Log", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            // Use the fully qualified name for the WPF SaveFileDialog to resolve ambiguity
+            var saveDialog = new Microsoft.Win32.SaveFileDialog
+            {
+                Filter = "Text Files (*.txt)|*.txt|CSV Files (*.csv)|*.csv|All files (*.*)|*.*",
+                FileName = $"AIOrganizer_Log_{DateTime.Now:yyyyMMdd_HHmmss}",
+                Title = "Save Log File"
+            };
+
+            // ShowDialog() returns a bool? (nullable boolean) for WPF SaveFileDialog
+            if (saveDialog.ShowDialog() == true)
+            {
+                try
+                {
+                    File.WriteAllText(saveDialog.FileName, LogBox.Text);
+                    Log("📋 Log exported to: " + saveDialog.FileName);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to export log.");
+                    WpfMsg.Show($"Failed to export log: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
             }
         }
     }

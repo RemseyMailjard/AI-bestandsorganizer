@@ -97,17 +97,13 @@ public class AIFileOrganizer
 
     //──────────── Main workflow (ongewijzigd) ────────────
     public async Task<(int processed, int moved)> OrganizeAsync(
-        string srcDir, string dstDir,
-        FilenameConfirmationHandler? confirm = null,
-        IProgress<string>? progress = null,
-        CancellationToken ct = default)
+       string srcDir, string dstDir,
+       FilenameConfirmationHandler? confirm = null,
+       IProgress<string>? progress = null,
+       CancellationToken ct = default)
     {
-        srcDir = Path.GetFullPath(srcDir);
-        dstDir = Path.GetFullPath(dstDir);
-        if (!Directory.Exists(srcDir)) throw new DirectoryNotFoundException(srcDir);
-        Directory.CreateDirectory(dstDir);
-
-        int proc = 0, moved = 0;
+        // ... existing setup ...
+        int proc = 0, movedCount = 0; // Renamed 'moved' to 'movedCount' to avoid conflict
 
         foreach (var fi in new DirectoryInfo(srcDir).EnumerateFiles("*", SearchOption.AllDirectories))
         {
@@ -120,44 +116,120 @@ public class AIFileOrganizer
 
             proc++; progress?.Report($"📄 {fi.FullName}");
             string category = _cfg.FallbackCategory;
-            string baseName = Path.GetFileNameWithoutExtension(fi.Name);
+            string originalBaseName = Path.GetFileNameWithoutExtension(fi.Name); // Store original for metadata
+            string currentBaseName = originalBaseName; // This will be modified by user confirmation
+            string? aiSuggestedFilename = null; // To store AI's suggestion for metadata
+            string extractedText = string.Empty;
 
             try
             {
-                string text = await ExtractTextAsync(fi);
-                if (!string.IsNullOrWhiteSpace(text))
+                extractedText = await ExtractTextAsync(fi); // Store extracted text
+                if (!string.IsNullOrWhiteSpace(extractedText))
                 {
-                    category = await ClassifyAsync(text, ct);
+                    category = await ClassifyAsync(extractedText, ct);
 
                     if (_cfg.EnableDescriptiveFilenames && confirm != null)
                     {
-                        string suggestion = await GenerateFilenameAsync(text, fi.Name, category, ct);
-                        baseName = Sanitize(baseName); suggestion = Sanitize(suggestion);
-                        baseName = await confirm(baseName, suggestion, progress);
-                        baseName = Sanitize(baseName);
+                        string suggestion = await GenerateFilenameAsync(extractedText, fi.Name, category, ct);
+                        aiSuggestedFilename = Sanitize(suggestion); // Store sanitized AI suggestion
+                        currentBaseName = Sanitize(currentBaseName);
+
+                        currentBaseName = await confirm(currentBaseName, aiSuggestedFilename, progress);
+                        currentBaseName = Sanitize(currentBaseName); // Sanitize user's choice
+                    }
+                    else if (_cfg.EnableDescriptiveFilenames) // If confirm is null but descriptive names are on
+                    {
+                        // Optionally, auto-apply AI suggestion if no confirmation handler
+                        // aiSuggestedFilename = await GenerateFilenameAsync(extractedText, fi.Name, category, ct);
+                        // currentBaseName = Sanitize(aiSuggestedFilename);
+                        // For now, let's keep currentBaseName as originalBaseName if no confirm handler
                     }
                 }
             }
-            catch (Exception ex) { _log.LogError(ex, "Processing error"); }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, $"Processing error for {fi.Name}");
+                progress?.Report($"❌ Error processing {fi.Name}: {ex.Message}");
+            }
 
-            string label = _cfg.Categories.TryGetValue(category, out var mapped)
+            string targetFolderLabel = _cfg.Categories.TryGetValue(category, out var mapped)
                          ? mapped : $"0. {_cfg.FallbackCategory}";
 
-            string tgtDir = Path.Combine(dstDir, label);
+            string tgtDir = Path.Combine(dstDir, targetFolderLabel);
             Directory.CreateDirectory(tgtDir);
 
-            string dest = Path.Combine(tgtDir, baseName + fi.Extension);
-            for (int n = 1; File.Exists(dest); n++)
-                dest = Path.Combine(tgtDir, $"{baseName}_{n}{fi.Extension}");
+            string finalFullFilename = Path.Combine(tgtDir, currentBaseName + fi.Extension);
+            for (int n = 1; File.Exists(finalFullFilename); n++)
+                finalFullFilename = Path.Combine(tgtDir, $"{currentBaseName}_{n}{fi.Extension}");
 
-            try { fi.MoveTo(dest); moved++; progress?.Report($"✅ {fi.Name} → {label}"); }
-            catch (Exception ex) { _log.LogError(ex, "Move failed"); }
+            try
+            {
+                fi.MoveTo(finalFullFilename);
+                movedCount++;
+                progress?.Report($"✅ {fi.Name} → {targetFolderLabel}{Path.DirectorySeparatorChar}{Path.GetFileName(finalFullFilename)}");
+
+                // Generate metadata if enabled
+                if (_cfg.GenerateMetadataFiles)
+                {
+                    await GenerateMetadataFileAsync(fi, finalFullFilename, category, targetFolderLabel,
+                                                    aiSuggestedFilename, extractedText, progress, ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, $"Move failed for {fi.Name}");
+                progress?.Report($"❌ Move failed for {fi.Name}: {ex.Message}");
+            }
         }
 
-        progress?.Report($"Done – {proc} processed, {moved} moved");
-        return (proc, moved);
+        progress?.Report($"Done – {proc} processed, {movedCount} moved");
+        return (proc, movedCount);
     }
+    private async Task GenerateMetadataFileAsync(
+        FileInfo originalFile,
+        string newFullFilePath,
+        string rawCategoryFromAI,
+        string targetFolderLabel,
+        string? aiSuggestedFilename, // Pass this in
+        string extractedText,
+        IProgress<string>? progress,
+        CancellationToken ct)
+    {
+        var metadata = new FileMetadata
+        {
+            OriginalFullPath = originalFile.FullName,
+            OriginalFilename = originalFile.Name,
+            ProcessedTimestampUtc = DateTime.UtcNow,
+            DetectedCategoryRaw = rawCategoryFromAI,
+            TargetFolderLabel = targetFolderLabel,
+            AISuggestedFilename = aiSuggestedFilename, // Use the passed-in value
+            FinalFilename = Path.GetFileName(newFullFilePath),
+            ExtractedTextPreview = extractedText.Length > 500
+                                   ? extractedText.Substring(0, 500) + "..."
+                                   : extractedText
+            // Optional: Populate FileHash, AISummary, AITags here if you implement them
+        };
 
+        // Place metadata file next to the new file, with .metadata.json extension
+        string metadataPath = Path.ChangeExtension(newFullFilePath, ".metadata.json");
+
+        try
+        {
+            // Use System.Text.Json for serialization
+            string json = JsonSerializer.Serialize(metadata, new JsonSerializerOptions { WriteIndented = true });
+            await File.WriteAllTextAsync(metadataPath, json, ct);
+            progress?.Report($"Ⓜ️ Metadata created for {Path.GetFileName(newFullFilePath)}");
+        }
+        catch (OperationCanceledException)
+        {
+            progress?.Report($"Ⓜ️ Metadata generation canceled for {Path.GetFileName(newFullFilePath)}");
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, $"Failed to write metadata for {originalFile.Name} to {metadataPath}");
+            progress?.Report($"❌ Error writing metadata for {Path.GetFileName(newFullFilePath)}");
+        }
+    }
     //──────────── LLM helpers ────────────
     private async Task<string> ClassifyAsync(string text, CancellationToken ct)
     {
@@ -334,6 +406,7 @@ public class AIOrganizerSettings
     public string ModelName { get; set; } = "gemini-1.5-flash-latest"; // Or your default
     public string? AzureDeployment { get; set; }
     public bool EnableFileRenaming { get; set; } = true;
+    public bool GenerateMetadataFiles { get; set; } = false;
     public List<string> SupportedExtensions { get; set; } = new List<string> { ".txt", ".pdf", ".docx", ".md" };
     public string FallbackCategory { get; set; } = "Overig";
     public Dictionary<string, string> Categories { get; set; } = new Dictionary<string, string> {
