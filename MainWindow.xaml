@@ -360,7 +360,6 @@
         <!-- Row 0: API-key -->
         <Label Grid.Row="0" Grid.Column="0" Content="API-key:"/>
         <PasswordBox x:Name="ApiKeyBox" Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,0,0,8"/>
-
         <!-- Row 1: Provider -->
         <Label Grid.Row="1" Grid.Column="0" Content="Provider:"/>
         <ComboBox x:Name="ProviderBox" Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Width="Auto" HorizontalAlignment="Left" MinWidth="180" Margin="0,0,0,8" SelectionChanged="ProviderBox_SelectionChanged">
@@ -372,8 +371,17 @@
         <!-- Row 2: Model -->
         <Label Grid.Row="2" Grid.Column="0" Content="Model:"/>
         <ComboBox x:Name="ModelBox" Grid.Row="2" Grid.Column="1" Grid.ColumnSpan="2" Width="Auto" HorizontalAlignment="Left" MinWidth="220" Margin="0,0,0,8">
-            <ComboBoxItem Content="gemini-1.5-pro-latest" IsSelected="True"/>
-            <ComboBoxItem Content="gemini-1.5-flash-latest"/>
+            <!-- Gemini Models -->
+            <ComboBoxItem Content="gemini-2.5-pro-preview-05-06"/>
+            <ComboBoxItem Content="gemini-2.5-flash-preview-tts"/>
+            <ComboBoxItem Content="gemini-2.0-flash"/>
+            <!-- Azure OpenAI Models -->
+            <ComboBoxItem Content="gpt-4.1"/>
+            <ComboBoxItem Content="gpt-4.1-mini"/>
+            <ComboBoxItem Content="gpt-4.1-nano"/>
+            <!-- OpenAI Models -->
+            <ComboBoxItem Content="o3"/>
+            <ComboBoxItem Content="o4-mini"/>
         </ComboBox>
 
         <!-- Row 3: Azure Endpoint -->
