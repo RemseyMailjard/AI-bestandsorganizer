@@ -1,60 +1,92 @@
 ﻿using System;
 using System.Diagnostics;
 using System.IO;
-using System.Linq;                         // ← nodig voor FirstOrDefault
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
-using System.Windows.Controls;
+using System.Windows.Controls; // For ComboBoxItem, TextBox, etc.
 
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-using SysForms = System.Windows.Forms;              // alleen FolderBrowserDialog
+using SysForms = System.Windows.Forms;
 using WpfMsg = System.Windows.MessageBox;
-using WpfTextBox = System.Windows.Controls.TextBox;   // expliciete alias
+using WpfTextBox = System.Windows.Controls.TextBox;
+
+// Assuming these types are defined in your project:
+// public delegate Task<string> FilenameConfirmationHandler(string originalFilename, string suggestedFilename, IProgress<string>? progressReporter);
+// public class AIFileOrganizer { /* ... */ public Task<(int processed, int moved)> OrganizeAsync(string src, string dst, FilenameConfirmationHandler? confirmer, IProgress<string> progress, CancellationToken token); }
+// public class AIOrganizerSettings { public string ApiKey; public string ModelName; public bool EnableFileRenaming; public bool EnableDescriptiveFilenames; /* ... */ }
+// public class FilenameInputDialog : Window { public FilenameInputDialog(string orig, string sugg); public string ResultFilename; /* ... */ }
+
 
 namespace AI_bestandsorganizer
 {
-    public partial class MainWindow : Window
+    public partial class MainWindow : Window // Ensure 'partial' keyword is present
     {
         private readonly AIFileOrganizer _organizer;
         private readonly ILogger<MainWindow> _logger;
-        private readonly AIOrganizerSettings _settings; // Dit is de singleton die door DI wordt geïnjecteerd
+        private readonly AIOrganizerSettings _settings;
         private CancellationTokenSource? _cts;
 
         public MainWindow(
             AIFileOrganizer organizer,
             ILogger<MainWindow> logger,
-            IOptions<AIOrganizerSettings> settings) // AIOrganizerSettings wordt hier via IOptions<T> binnengehaald
+            IOptions<AIOrganizerSettings> options)
         {
+            _organizer = organizer ?? throw new ArgumentNullException(nameof(organizer));
+            _logger    = logger    ?? throw new ArgumentNullException(nameof(logger));
+            _settings  = options?.Value ?? throw new ArgumentNullException(nameof(options));
+
+            // CRITICAL: This call requires MainWindow.xaml to be correctly processed.
+            // If CS0103 occurs here, your XAML-to-C# link is broken.
             InitializeComponent();
 
-            _organizer = organizer ?? throw new ArgumentNullException(nameof(organizer));
-            _logger    = logger     ?? throw new ArgumentNullException(nameof(logger));
-            _settings  = settings.Value ?? throw new ArgumentNullException(nameof(settings)); // Haal de geconfigureerde instellingen op
+            // UI-initialisatie: The following lines will cause CS0103 errors
+            // if the corresponding x:Name attributes are missing in MainWindow.xaml
+            // or if InitializeComponent() failed/is not found.
 
-            // UI init
+            // Ensure <PasswordBox x:Name="ApiKeyBox" ... /> exists in XAML
             ApiKeyBox.Password = _settings.ApiKey;
 
-            var modelItem = ModelBox.Items.OfType<ComboBoxItem>()
-                                .FirstOrDefault(i => (string?)i.Content == _settings.ModelName);
-            ModelBox.SelectedItem = modelItem ?? ModelBox.Items[0];
+            // Ensure <ComboBox x:Name="ModelBox" ... /> exists in XAML
+            // Ensure <ComboBox x:Name="ProviderBox" ... /> exists in XAML (as it affects ModelBox population)
+            // It's assumed ProviderBox_SelectionChanged might run during InitializeComponent
+            // if ProviderBox has a default selection in XAML.
+            var modelItem = ModelBox.Items
+                                     .OfType<ComboBoxItem>()
+                                     .FirstOrDefault(i => (string?)i.Content == _settings.ModelName);
 
+            if (modelItem != null)
+            {
+                ModelBox.SelectedItem = modelItem;
+            }
+            else if (ModelBox.Items.Count > 0)
+            {
+                ModelBox.SelectedItem = ModelBox.Items[0];
+            }
+
+            // Ensure <TextBox x:Name="SrcBox" ... /> exists in XAML
             SrcBox.Text = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+
+            // Ensure <TextBox x:Name="DstBox" ... /> exists in XAML
             DstBox.Text = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "AI-mappen");
 
-            // NIEUW: Stel de checkbox in op basis van de geladen instelling
-            EnableRenamingCheckBox.IsChecked = _settings.EnableFileRenaming;
+            // Ensure <CheckBox x:Name="RenameChk" ... /> exists in XAML
+            RenameChk.IsChecked = _settings.EnableFileRenaming;
         }
 
         // ---------- Browse-knoppen ----------
+        // SrcBox and DstBox are WpfTextBox (System.Windows.Controls.TextBox)
+        // Ensure <Button Name="BrowseSrcButton" Click="BrowseSrc" ... /> uses SrcBox
+        // Ensure <Button Name="BrowseDstButton" Click="BrowseDst" ... /> uses DstBox
         private void BrowseSrc(object? _, RoutedEventArgs e) => Browse(SrcBox);
         private void BrowseDst(object? _, RoutedEventArgs e) => Browse(DstBox);
 
-        private static void Browse(WpfTextBox target)
+        private static void Browse(WpfTextBox target) // WpfTextBox is System.Windows.Controls.TextBox
         {
             using var dlg = new SysForms.FolderBrowserDialog
             {
@@ -67,74 +99,58 @@ namespace AI_bestandsorganizer
         }
 
         // ---------- Run-knop ----------
+        // Ensure <Button Name="RunButton" Click="Run_Click" ... /> exists
         private async void Run_Click(object sender, RoutedEventArgs e)
         {
-            var runBtn = sender as System.Windows.Controls.Button;
-            if (runBtn is not null) runBtn.IsEnabled = false;
+            if (sender is System.Windows.Controls.Button runBtn) runBtn.IsEnabled = false;
 
+            // Ensure <TextBox x:Name="LogBox" ... /> exists in XAML
             LogBox.Clear();
             Log("🚀 Organiseren gestart …");
 
-            if (string.IsNullOrWhiteSpace(ApiKeyBox.Password))
+            if (string.IsNullOrWhiteSpace(ApiKeyBox.Password)) // ApiKeyBox already checked
             {
                 Log("❌ Fout: API-key ontbreekt");
                 WpfMsg.Show("API-key ontbreekt.", "AI File Organizer",
                             MessageBoxButton.OK, MessageBoxImage.Warning);
-                if (runBtn is not null) runBtn.IsEnabled = true;
+                if (sender is System.Windows.Controls.Button btn) btn.IsEnabled = true;
                 return;
             }
 
-            // settings live bijwerken voor de huidige run
-            _settings.ApiKey = ApiKeyBox.Password;
-            _settings.ModelName = ((ComboBoxItem)ModelBox.SelectedItem)!.Content!.ToString()!;
-            // NIEUW: Werk de EnableFileRenaming setting bij van de UI
-            _settings.EnableFileRenaming = EnableRenamingCheckBox.IsChecked ?? false;
-
+            _settings.ApiKey             = ApiKeyBox.Password; // ApiKeyBox checked
+            _settings.ModelName          = ((ComboBoxItem)ModelBox.SelectedItem)!.Content!.ToString()!; // ModelBox checked
+            _settings.EnableFileRenaming = RenameChk.IsChecked ?? false; // RenameChk checked
 
             _cts = new CancellationTokenSource();
 
             try
             {
-                var prog = new Progress<string>(Log);
+                var prog = new Progress<string>(Log); // Log uses LogBox
 
-                // Initialiseer de FilenameConfirmationHandler ALLEEN als hernoemen is ingeschakeld
                 FilenameConfirmationHandler? filenameConfirmer = null;
-                // Deel 'EnableDescriptiveFilenames' blijft actief om de AI-suggesties te genereren.
-                // 'EnableFileRenaming' is de override om te bepalen of *überhaupt* hernoemd wordt.
+                // Assuming FilenameInputDialog, AIOrganizerSettings.EnableDescriptiveFilenames are okay
                 if (_settings.EnableFileRenaming && _settings.EnableDescriptiveFilenames)
                 {
-                    filenameConfirmer = async (originalFilenameBase, suggestedFilenameBase, progressReporter) =>
+                    filenameConfirmer = async (orig, sugg, reporter) =>
                     {
-                        return await Dispatcher.Invoke(async () =>
+                        reporter?.Report($"Bevestig bestandsnaam voor '{orig}'…");
+
+                        var result = await Dispatcher.InvokeAsync(() =>
                         {
-                            progressReporter?.Report($"Awaiting filename confirmation for '{originalFilenameBase}'...");
-
-                            var dialog = new FilenameInputDialog(originalFilenameBase, suggestedFilenameBase);
-                            dialog.Owner = this;
-
-                            bool? dialogResult = dialog.ShowDialog();
-
-                            if (dialogResult == true)
-                            {
-                                progressReporter?.Report($"Filename confirmed: '{dialog.ResultFilename}'");
-                                return dialog.ResultFilename;
-                            }
-                            else
-                            {
-                                progressReporter?.Report($"Filename confirmation cancelled. Keeping original name: '{originalFilenameBase}'");
-                                return originalFilenameBase;
-                            }
+                            var dlg = new FilenameInputDialog(orig, sugg) { Owner = this };
+                            return dlg.ShowDialog() == true ? dlg.ResultFilename : orig;
                         });
+
+                        reporter?.Report($"Naam gekozen: '{result}'");
+                        return result;
                     };
                 }
-                // Als EnableFileRenaming FALSE is, blijft filenameConfirmer NULL.
-                // AIFileOrganizer zal dan default de originele bestandsnaam gebruiken.
 
-
-                var (proc, moved) = await _organizer
+                // SrcBox and DstBox checked
+                (int processed, int moved) = await _organizer
                     .OrganizeAsync(SrcBox.Text, DstBox.Text, filenameConfirmer, prog, _cts.Token);
 
-                Log($"✅ Klaar! {moved}/{proc} bestanden verplaatst.");
+                Log($"✅ Klaar! {moved}/{processed} bestanden verplaatst.");
             }
             catch (OperationCanceledException)
             {
@@ -147,7 +163,7 @@ namespace AI_bestandsorganizer
             }
             finally
             {
-                if (runBtn is not null) runBtn.IsEnabled = true;
+                if (sender is System.Windows.Controls.Button btn) btn.IsEnabled = true;
                 _cts?.Dispose();
                 _cts = null;
             }
@@ -157,18 +173,20 @@ namespace AI_bestandsorganizer
         private void Log(string line) =>
             Dispatcher.Invoke(() =>
             {
+                // LogBox checked
                 LogBox.AppendText(line + Environment.NewLine);
                 LogBox.ScrollToEnd();
             });
 
         // ---------- LinkedIn-knop ----------
+        // Ensure <Button Name="LinkedInButton" Click="OpenLinkedIn" ... /> exists
         private void OpenLinkedIn(object? _, RoutedEventArgs e)
         {
             try
             {
                 Process.Start(new ProcessStartInfo
                 {
-                    FileName       = "https://www.linkedin.com/in/remseymailjard/",
+                    FileName        = "https://www.linkedin.com/in/remseymailjard/",
                     UseShellExecute = true
                 });
             }
@@ -177,6 +195,43 @@ namespace AI_bestandsorganizer
                 _logger.LogError(ex, "LinkedIn link openen mislukt.");
                 WpfMsg.Show($"Kan link niet openen: {ex.Message}",
                             "Fout", MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+        }
+
+        // ---------- Provider-selectie ----------
+        // Ensure <ComboBox x:Name="ProviderBox" SelectionChanged="ProviderBox_SelectionChanged" ... /> exists
+        private void ProviderBox_SelectionChanged(object? s, SelectionChangedEventArgs e)
+        {
+            // Ensure these controls exist in XAML with x:Name:
+            // ProviderBox, LblEndpoint, EndpointBox, LblDeploy, DeployBox, ModelBox
+            if (ProviderBox == null || LblEndpoint == null || EndpointBox == null ||
+                LblDeploy == null || DeployBox == null || ModelBox == null)
+            {
+                _logger?.LogWarning("ProviderBox_SelectionChanged called but some UI elements are null. Check XAML x:Name attributes and InitializeComponent call.");
+                return;
+            }
+
+            bool azure = ProviderBox.SelectedIndex == 1;
+
+            LblEndpoint.Visibility = EndpointBox.Visibility =
+            LblDeploy.Visibility   = DeployBox.Visibility   = azure ? Visibility.Visible : Visibility.Collapsed;
+
+            ModelBox.Items.Clear();
+
+            if (azure || ProviderBox.SelectedIndex == 2)      // Azure of OpenAI
+            {
+                ModelBox.Items.Add(new ComboBoxItem { Content = "gpt-4o-mini" });
+                ModelBox.Items.Add(new ComboBoxItem { Content = "gpt-35-turbo" });
+            }
+            else                                              // Gemini (default for Index 0 or any other index)
+            {
+                ModelBox.Items.Add(new ComboBoxItem { Content = "gemini-1.5-pro-latest" });
+                ModelBox.Items.Add(new ComboBoxItem { Content = "gemini-1.5-flash-latest" });
+            }
+
+            if (ModelBox.Items.Count > 0)
+            {
+                ((ComboBoxItem)ModelBox.Items[0]).IsSelected = true;
             }
         }
     }

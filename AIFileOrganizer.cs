@@ -1,337 +1,354 @@
-﻿// ---------- AIFileOrganizer.cs (improved) ----------
+﻿// ---------- AIFileOrganizer.cs (v6 – Gemini | Azure OpenAI | OpenAI) ---
+// Requires .NET 7+
+//
+// NuGet packages:
+//   • Mscc.GenerativeAI
+//   • Azure.AI.OpenAI (≥1.0.0-beta.17)
+//   • UglyToad.PdfPig
+//   • DocumentFormat.OpenXml
+// -----------------------------------------------------------------------
 using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.Linq;
+using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
-
-// OpenXML & PdfPig
 using DocumentFormat.OpenXml.Packaging;
-using PdfDocument = UglyToad.PdfPig.PdfDocument;
-using PdfPage = UglyToad.PdfPig.Content.Page;
-using WordText = DocumentFormat.OpenXml.Wordprocessing.Text;
-
-// DI / Logging
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Mscc.GenerativeAI;                         // Google Gemini
+using Azure;
+using Azure.AI.OpenAI;                           // Azure OpenAI
+using PdfDocument = UglyToad.PdfPig.PdfDocument;
+using PdfPage = UglyToad.PdfPig.Content.Page;
 
-// Mscc-GenerativeAI
-using Mscc.GenerativeAI;
+// ── Alias om naamconflict met Mscc.GenerativeAI.ChatMessage te vermijden
+// CORRECTED ALIASES:
+using OpenAI;
+using OpenAI.Chat; // This 'using OpenAI;' can cause ambiguity if you also have the official OpenAI SDK.
+                   // If _azure client was intended to be OpenAI.OpenAIClient, this needs a different approach.
+                   // Given the errors, it's clear the intention was to use Azure.AI.OpenAI.OpenAIClient.
 
-namespace AI_bestandsorganizer
+namespace AI_bestandsorganizer;
+
+
+//──────────────────────────────────── Delegate ─────────────────────────
+public delegate Task<string> FilenameConfirmationHandler(string originalBase,
+                                                         string suggestedBase,
+                                                         IProgress<string>? progress);
+
+//──────────────────────────────────── Organizer ────────────────────────
+public class AIFileOrganizer
 {
-    /// <summary>
-    /// Delegate used to let a UI‑layer confirm or override a suggested filename.
-    /// </summary>
-    public delegate Task<string> FilenameConfirmationHandler(string originalFilenameBase,
-                                                             string suggestedFilenameBase,
-                                                             IProgress<string>? progress);
+    private readonly AIOrganizerSettings _cfg;
+    private readonly ILogger<AIFileOrganizer> _log;
+    private readonly HashSet<string> _supported;
 
-    //---------------------------------------------------------------------
-    //  AIFileOrganizer  –  organizes files with help of Gemini‑API
-    //---------------------------------------------------------------------
-    public partial class AIFileOrganizer
+    private readonly GoogleAI? _gemini;
+    private readonly AzureOpenAIClient _azure; // Explicitly type for clarity
+    private readonly HttpClient? _openaiHttp;
+
+    private static readonly (Regex rx, string cat)[] _keywords =
     {
-        private readonly AIOrganizerSettings _settings;
-        private readonly ILogger<AIFileOrganizer> _logger;
-        private readonly HashSet<string> _supported;
-        private readonly GoogleAI _google;
+        (new(@"\b(invoice|factuur|order|offerte|bon)\b", RegexOptions.IgnoreCase), "Bedrijfsadministratie"),
+        (new(@"\b(belasting|tax|aangifte)\b",           RegexOptions.IgnoreCase), "Belastingen"),
+        (new(@"\b(bankafschrift|belegging)\b",          RegexOptions.IgnoreCase), "Financiën"),
+        (new(@"\b(verzekering|polis)\b",                RegexOptions.IgnoreCase), "Verzekeringen"),
+        (new(@"\b(hypotheek|huurcontract)\b",           RegexOptions.IgnoreCase), "Woning"),
+        (new(@"\b(medisch|recept|dokter)\b",            RegexOptions.IgnoreCase), "Gezondheid en Medisch")
+    };
 
-        // Heuristic keyword→category map (very light weight, only used when AI fails)
-        private static readonly (Regex regex, string category)[] _keywordMap =
+    public AIFileOrganizer(IOptions<AIOrganizerSettings> options,
+                           ILogger<AIFileOrganizer> logger)
+    {
+        _cfg = options.Value ?? throw new ArgumentNullException(nameof(options));
+        _log = logger        ?? throw new ArgumentNullException(nameof(logger));
+
+        _supported = new(_cfg.SupportedExtensions.Select(e => e.ToLowerInvariant()),
+                         StringComparer.OrdinalIgnoreCase);
+
+        switch (_cfg.Provider)
         {
-            (new Regex(@"\b(invoice|bank|statement|rekening|factuur)\b", RegexOptions.IgnoreCase), "Financiën"),
-            (new Regex(@"\b(belasting|tax|aangifte)\b",               RegexOptions.IgnoreCase), "Belastingen"),
-            (new Regex(@"\b(polis|verzekering|premium)\b",            RegexOptions.IgnoreCase), "Verzekeringen"),
-            (new Regex(@"\b(hypotheek|huurcontract|notaris)\b",        RegexOptions.IgnoreCase), "Woning"),
-            (new Regex(@"\b(medisch|recept|dokter|gezondheid)\b",      RegexOptions.IgnoreCase), "Gezondheid en Medisch"),
-            (new Regex(@"\b(autoverzekering|kenteken|apk)\b",          RegexOptions.IgnoreCase), "Voertuigen")
+            case LlmProvider.Gemini:
+                _gemini = new GoogleAI(_cfg.ApiKey);
+                break;
+
+            case LlmProvider.AzureOpenAI:
+                if (string.IsNullOrWhiteSpace(_cfg.AzureEndpoint))
+                    throw new ArgumentException("AzureEndpoint is verplicht voor Azure OpenAI.");
+                // CORRECTED INSTANTIATION: Use fully qualified name or ensure no ambiguity
+                _azure = new Azure.AI.OpenAI.AzureOpenAIClient(new Uri(_cfg.AzureEndpoint),
+                                                          new AzureKeyCredential(_cfg.ApiKey));
+                break;
+
+            case LlmProvider.OpenAI:
+                _openaiHttp = new HttpClient();
+                _openaiHttp.DefaultRequestHeaders.Authorization =
+                    new AuthenticationHeaderValue("Bearer", _cfg.ApiKey);
+                break;
+        }
+    }
+
+    //──────────── Main workflow (ongewijzigd) ────────────
+    public async Task<(int processed, int moved)> OrganizeAsync(
+        string srcDir, string dstDir,
+        FilenameConfirmationHandler? confirm = null,
+        IProgress<string>? progress = null,
+        CancellationToken ct = default)
+    {
+        srcDir = Path.GetFullPath(srcDir);
+        dstDir = Path.GetFullPath(dstDir);
+        if (!Directory.Exists(srcDir)) throw new DirectoryNotFoundException(srcDir);
+        Directory.CreateDirectory(dstDir);
+
+        int proc = 0, moved = 0;
+
+        foreach (var fi in new DirectoryInfo(srcDir).EnumerateFiles("*", SearchOption.AllDirectories))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!_supported.Contains(fi.Extension.ToLowerInvariant()))
+            {
+                progress?.Report($"⏭️ {fi.Name}");
+                continue;
+            }
+
+            proc++; progress?.Report($"📄 {fi.FullName}");
+            string category = _cfg.FallbackCategory;
+            string baseName = Path.GetFileNameWithoutExtension(fi.Name);
+
+            try
+            {
+                string text = await ExtractTextAsync(fi);
+                if (!string.IsNullOrWhiteSpace(text))
+                {
+                    category = await ClassifyAsync(text, ct);
+
+                    if (_cfg.EnableDescriptiveFilenames && confirm != null)
+                    {
+                        string suggestion = await GenerateFilenameAsync(text, fi.Name, category, ct);
+                        baseName = Sanitize(baseName); suggestion = Sanitize(suggestion);
+                        baseName = await confirm(baseName, suggestion, progress);
+                        baseName = Sanitize(baseName);
+                    }
+                }
+            }
+            catch (Exception ex) { _log.LogError(ex, "Processing error"); }
+
+            string label = _cfg.Categories.TryGetValue(category, out var mapped)
+                         ? mapped : $"0. {_cfg.FallbackCategory}";
+
+            string tgtDir = Path.Combine(dstDir, label);
+            Directory.CreateDirectory(tgtDir);
+
+            string dest = Path.Combine(tgtDir, baseName + fi.Extension);
+            for (int n = 1; File.Exists(dest); n++)
+                dest = Path.Combine(tgtDir, $"{baseName}_{n}{fi.Extension}");
+
+            try { fi.MoveTo(dest); moved++; progress?.Report($"✅ {fi.Name} → {label}"); }
+            catch (Exception ex) { _log.LogError(ex, "Move failed"); }
+        }
+
+        progress?.Report($"Done – {proc} processed, {moved} moved");
+        return (proc, moved);
+    }
+
+    //──────────── LLM helpers ────────────
+    private async Task<string> ClassifyAsync(string text, CancellationToken ct)
+    {
+        string catList = string.Join(" | ", _cfg.Categories.Keys);
+        string prompt = $"Return EXACTLY one of: {catList}\n\n" +
+                         text[..Math.Min(text.Length, _cfg.MaxPromptChars)];
+
+        string? ans = _cfg.Provider switch
+        {
+            LlmProvider.Gemini => await AskGeminiAsync(prompt, ct),
+            LlmProvider.AzureOpenAI => await AskAzureAsync(prompt, ct),
+            LlmProvider.OpenAI => await AskOpenAiAsync(prompt, ct),
+            _ => null
         };
 
-        //-----------------------------------------------------------------
-        public AIFileOrganizer(IOptions<AIOrganizerSettings> options,
-                               GoogleAI google,
-                               ILogger<AIFileOrganizer> logger)
-        {
-            _settings = options?.Value ?? throw new ArgumentNullException(nameof(options));
-            _google   = google           ?? throw new ArgumentNullException(nameof(google));
-            _logger   = logger           ?? throw new ArgumentNullException(nameof(logger));
+        if (string.IsNullOrWhiteSpace(ans)) return Heuristic(text);
 
-            _supported = new HashSet<string>(
-                (_settings.SupportedExtensions ?? new()).Select(e => e.ToLowerInvariant()),
-                StringComparer.OrdinalIgnoreCase);
-        }
-
-        //-----------------------------------------------------------------
-        public async Task<(int processed, int moved)> OrganizeAsync(
-            string srcDir,
-            string dstDir,
-            FilenameConfirmationHandler? confirmFilename = null,
-            IProgress<string>? progress = null,
-            CancellationToken cancellationToken = default)
-        {
-            srcDir = Path.GetFullPath(srcDir);
-            dstDir = Path.GetFullPath(dstDir);
-            var src = new DirectoryInfo(srcDir);
-            if (!src.Exists) throw new DirectoryNotFoundException(src.FullName);
-            Directory.CreateDirectory(dstDir);
-
-            int processed = 0, moved = 0;
-
-            foreach (var fi in src.EnumerateFiles("*", SearchOption.AllDirectories))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                if (!_supported.Contains(fi.Extension.ToLowerInvariant()))
-                {
-                    progress?.Report($"⏭️  Skipping {fi.Name} (unsupported)");
-                    continue;
-                }
-
-                processed++;
-                progress?.Report($"📄 Lezen: {fi.FullName}");
-
-                string category = _settings.FallbackCategory;
-                string targetLabel = $"0. {_settings.FallbackCategory}";
-                string finalFilenameBase = Path.GetFileNameWithoutExtension(fi.Name);
-
-                try
-                {
-                    string text = await ExtractTextAsync(fi).ConfigureAwait(false);
-
-                    if (!string.IsNullOrWhiteSpace(text))
-                    {
-                        category = await ClassifyAsync(text, cancellationToken).ConfigureAwait(false);
-
-                        // Optional descriptive filename
-                        if (_settings.EnableDescriptiveFilenames && confirmFilename != null)
-                        {
-                            progress?.Report($"📝 Generating filename for '{fi.Name}' → {category}");
-                            string suggestion = await GenerateFilenameAsync(text, fi.Name, category, cancellationToken)
-                                                      .ConfigureAwait(false);
-                            finalFilenameBase = await confirmFilename(finalFilenameBase, suggestion, progress);
-                            finalFilenameBase = SanitizeFilename(finalFilenameBase);
-                            if (string.IsNullOrWhiteSpace(finalFilenameBase))
-                                finalFilenameBase = Path.GetFileNameWithoutExtension(fi.Name);
-                        }
-                    }
-                    else
-                    {
-                        _logger.LogWarning("Geen tekst gevonden in {File}.", fi.FullName);
-                    }
-
-                    targetLabel = _settings.Categories.TryGetValue(category, out var mapped)
-                                  ? mapped
-                                  : $"0. {_settings.FallbackCategory}";
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Classificatie/naamgeneratie mislukt voor {File}", fi.FullName);
-                    progress?.Report($"❌ Fout bij verwerken van {fi.Name}: {ex.Message}");
-                }
-
-                string targetDir = Path.Combine(dstDir, targetLabel);
-                Directory.CreateDirectory(targetDir);
-
-                string dest = Path.Combine(targetDir, finalFilenameBase + fi.Extension);
-                int c = 1;
-                while (File.Exists(dest))
-                    dest = Path.Combine(targetDir, $"{finalFilenameBase}_{c++}{fi.Extension}");
-
-                try
-                {
-                    fi.MoveTo(dest);
-                    moved++;
-                    progress?.Report($"✅ {fi.Name} → {Path.GetFileName(dest)}  (→ {targetLabel})");
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Verplaatsen mislukt voor {File}", fi.FullName);
-                    progress?.Report($"❌ Kon {fi.Name} niet verplaatsen: {ex.Message}");
-                }
-            }
-
-            progress?.Report($"Organisatie klaar – {processed} verwerkt, {moved} verplaatst.");
-            return (processed, moved);
-        }
-
-        #region ――――――――――――  GEMINI  ――――――――――――――――――――――――――――――――
-        private async Task<string> ClassifyAsync(string text, CancellationToken ct)
-        {
-            // 1) Prompt Gemini
-            string catList = string.Join(" | ", _settings.Categories.Keys);
-            string prompt =
-                "Je krijgt documenttekst en retourneert *exact* één van deze labels (case‑insensitive):\n" +
-                catList + "\n" +
-                "Antwoord enkel het label, zonder punt, nummering of extra woorden." +
-                "\n\nDOCUMENT:\n" +
-                text[..Math.Min(text.Length, _settings.MaxPromptChars)];
-
-            _logger.LogDebug("Classify‑prompt →\n{Prompt}", prompt);
-
-            var model = _google.GenerativeModel(_settings.ModelName);
-            string? aiAns = null;
-            try
-            {
-                var res = await model.GenerateContent(prompt, cancellationToken: ct);
-                aiAns = res.Text?.Trim();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Gemini classificatie mislukt.");
-            }
-
-            // 2) Normaliseer & match
-            if (!string.IsNullOrWhiteSpace(aiAns))
-            {
-                string norm = Normalize(aiAns);
-                string? match = _settings.Categories.Keys.FirstOrDefault(k => Normalize(k) == norm);
-                if (match != null)
-                {
-                    _logger.LogInformation("AI → '{AiAns}' ⇒ '{Match}'", aiAns, match);
-                    return match;
-                }
-            }
-
-            // 3) Keyword‑heuristiek
-            foreach (var (regex, cat) in _keywordMap)
-            {
-                if (regex.IsMatch(text))
-                {
-                    _logger.LogInformation("Heuristiek trof '{Cat}'", cat);
-                    return cat;
-                }
-            }
-
-            _logger.LogWarning("Geen match – fallback {Fallback}", _settings.FallbackCategory);
-            return _settings.FallbackCategory;
-        }
-
-        private async Task<string> GenerateFilenameAsync(string text, string originalFilename, string category, CancellationToken ct)
-        {
-            string relevant = text[..Math.Min(text.Length, _settings.MaxPromptChars)];
-            string prompt =
-                "Generate a short, descriptive filename (no extension) for this document. " +
-                $"Category: '{category}'. Use dates YYYY‑MM‑DD if present. " +
-                "Avoid invalid path characters. Respond *only* with the name.\n\n" +
-                relevant;
-
-            var model = _google.GenerativeModel(_settings.ModelName);
-            string? ans = null;
-            try
-            {
-                var res = await model.GenerateContent(prompt, cancellationToken: ct);
-                ans = res.Text?.Trim();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Gemini filename‑gen mislukt.");
-            }
-
-            return string.IsNullOrWhiteSpace(ans)
-                   ? Path.GetFileNameWithoutExtension(originalFilename)
-                   : SanitizeFilename(ans);
-        }
-        #endregion
-
-        #region ――――――――――――  TEXT EXTRACTION  ――――――――――――――――――――――――――
-        private async Task<string> ExtractTextAsync(FileInfo fi)
-        {
-            string ext = fi.Extension.ToLowerInvariant();
-            if (ext is ".txt" or ".md")
-            {
-                try { return await File.ReadAllTextAsync(fi.FullName, Encoding.UTF8); }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Lezen TXT mislukt: {File}", fi.Name);
-                    return string.Empty;
-                }
-            }
-
-            if (ext == ".docx")
-            {
-                try
-                {
-                    using var doc = WordprocessingDocument.Open(fi.FullName, false);
-                    return doc.MainDocumentPart?.Document?.Body?.InnerText ?? string.Empty;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "DOCX extractie mislukt: {File}", fi.Name);
-                    return string.Empty;
-                }
-            }
-
-            if (ext == ".pdf")
-            {
-                var sb = new StringBuilder();
-                try
-                {
-                    using var pdf = PdfDocument.Open(fi.FullName);
-                    foreach (PdfPage p in pdf.GetPages()) sb.Append(p.Text).Append(' ');
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "PDF extractie mislukt: {File}", fi.Name);
-                }
-
-                // OCR fallback (optional)
-                if (sb.Length < 30 && _settings.EnableDescriptiveFilenames)
-                {
-                    try { sb.Append(await OcrHelper.RunAsync(fi.FullName)); }
-                    catch (Exception ex) { _logger.LogError(ex, "OCR mislukt voor {File}", fi.Name); }
-                }
-                return sb.ToString();
-            }
-
-            return string.Empty;
-        }
-        #endregion
-
-        #region ――――――――――――  HELPERS  ――――――――――――――――――――――――――――――――――――
-        private static string Normalize(string s)
-        {
-            if (string.IsNullOrWhiteSpace(s)) return string.Empty;
-
-            // Strip accents
-            string formD = s.Normalize(NormalizationForm.FormD);
-            var sb = new StringBuilder(formD.Length);
-            foreach (var ch in formD)
-                if (CharUnicodeInfo.GetUnicodeCategory(ch) != UnicodeCategory.NonSpacingMark)
-                    sb.Append(ch);
-            string noDiacritics = sb.ToString();
-
-            // Keep only letters/numbers
-            return Regex.Replace(noDiacritics, "[^A-Za-z0-9]", "", RegexOptions.IgnoreCase)
-                         .ToLowerInvariant();
-        }
-
-        public static string SanitizeFilename(string filename)
-        {
-            if (string.IsNullOrWhiteSpace(filename)) return string.Empty;
-
-            char[] invalid = Path.GetInvalidFileNameChars().Concat(Path.GetInvalidPathChars()).Distinct().ToArray();
-            string cleaned = new string(filename.Select(c => invalid.Contains(c) ? '_' : c).ToArray());
-            cleaned = MyRegex().Replace(cleaned, "_");
-            cleaned = Regex.Replace(cleaned, "_+", "_");
-            if (cleaned.Length > 100) cleaned = cleaned[..100];
-            return cleaned.Trim('_');
-        }
-
-        [GeneratedRegex("[\\s]+")]
-        private static partial Regex MyRegex();
-        #endregion
+        string norm = Normalize(ans);
+        return _cfg.Categories.Keys.FirstOrDefault(k => Normalize(k) == norm) ?? Heuristic(text);
     }
 
-    //---------------------------------------------------------------------
-    //  Simple OCR helper (placeholder) – plug your favourite engine here
-    //---------------------------------------------------------------------
-    internal static class OcrHelper
+    private async Task<string> GenerateFilenameAsync(string text, string original,
+                                                     string category, CancellationToken ct)
     {
-        public static Task<string> RunAsync(string file) => Task.FromResult(string.Empty); // TODO implement
+        string prompt =
+            $"Suggest a concise filename (no extension) for category '{category}'.\n\n" +
+            text[..Math.Min(text.Length, _cfg.MaxPromptChars)];
+
+        string? ans = _cfg.Provider switch
+        {
+            LlmProvider.Gemini => await AskGeminiAsync(prompt, ct),
+            LlmProvider.AzureOpenAI => await AskAzureAsync(prompt, ct),
+            LlmProvider.OpenAI => await AskOpenAiAsync(prompt, ct),
+            _ => null
+        };
+
+        return string.IsNullOrWhiteSpace(ans)
+               ? Path.GetFileNameWithoutExtension(original)
+               : Sanitize(ans);
     }
+
+    //── Google Gemini
+    private async Task<string?> AskGeminiAsync(string prompt, CancellationToken ct) =>
+        (await _gemini!.GenerativeModel(_cfg.ModelName)
+                       .GenerateContent(prompt, cancellationToken: ct))
+        .Text?.Trim();
+
+    //── Azure OpenAI
+    private async Task<string?> AskAzureAsync(string prompt, CancellationToken ct)
+    {
+        if (_azure is null || string.IsNullOrWhiteSpace(_cfg.AzureDeployment))
+        {
+            _log.LogError("AzureOpenAIClient of deployment ontbreekt.");
+            return null;
+        }
+
+        ChatClient chat = _azure.GetChatClient(_cfg.AzureDeployment);
+
+        ChatCompletion completion = await chat.CompleteChatAsync(
+            [
+                new SystemChatMessage("You are a file-sorting assistant."),
+            new UserChatMessage(prompt)
+            ],
+                  cancellationToken: ct);
+
+        return completion.Content[0].Text.Trim();
+    }
+
+
+    //── Native OpenAI REST
+    private async Task<string?> AskOpenAiAsync(string prompt, CancellationToken ct)
+    {
+        var req = new
+        {
+            model = _cfg.ModelName,
+            messages = new[] { new { role = "user", content = prompt } },
+            temperature = 0.2
+        };
+
+        using var resp = await _openaiHttp!.PostAsync(
+            "https://api.openai.com/v1/chat/completions",
+            new StringContent(JsonSerializer.Serialize(req), Encoding.UTF8, "application/json"), ct);
+
+        resp.EnsureSuccessStatusCode();
+
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+        return doc.RootElement.GetProperty("choices")[0]
+                              .GetProperty("message")
+                              .GetProperty("content")
+                              .GetString()?.Trim();
+    }
+
+    //──────────── Text extraction (verkort) ────────────
+    private async Task<string> ExtractTextAsync(FileInfo fi)
+    {
+        string ext = fi.Extension.ToLowerInvariant();
+
+        if (ext is ".txt" or ".md")
+            return await File.ReadAllTextAsync(fi.FullName, Encoding.UTF8);
+
+        if (ext == ".docx")
+        {
+            try
+            {
+                using var doc = WordprocessingDocument.Open(fi.FullName, false);
+                return doc.MainDocumentPart?.Document?.Body?.InnerText ?? string.Empty;
+            }
+            catch { return string.Empty; }
+        }
+
+        if (ext == ".pdf")
+        {
+            var sb = new StringBuilder();
+            try
+            {
+                using var pdf = UglyToad.PdfPig.PdfDocument.Open(fi.FullName); // Fully qualified to be safe, though PdfDocument alias exists
+                foreach (UglyToad.PdfPig.Content.Page p in pdf.GetPages()) sb.Append(p.Text).Append(' '); // Fully qualified to be safe, though PdfPage alias exists
+            }
+            catch { }
+
+            if (sb.Length < 30 && _cfg.EnableOcr)
+                sb.Append(await OcrHelper.RunAsync(fi.FullName));
+
+            return sb.ToString();
+        }
+
+        return string.Empty;
+    }
+
+    //──────────── Utilities ────────────
+    private string Heuristic(string txt)
+    {
+        foreach (var (rx, cat) in _keywords) if (rx.IsMatch(txt)) return cat;
+        return _cfg.FallbackCategory;
+    }
+
+    private static string Normalize(string s)
+    {
+        var sb = new StringBuilder();
+        foreach (var c in s.Normalize(NormalizationForm.FormD))
+            if (CharUnicodeInfo.GetUnicodeCategory(c) != UnicodeCategory.NonSpacingMark)
+                sb.Append(c);
+        return Regex.Replace(sb.ToString(), "[^A-Za-z0-9]", "").ToLowerInvariant();
+    }
+
+    private static string Sanitize(string name)
+    {
+        char[] invalid = Path.GetInvalidFileNameChars();
+        string clean = new(name.Select(c => invalid.Contains(c)||char.IsWhiteSpace(c) ? '_' : c).ToArray());
+        clean = Regex.Replace(clean, "_+", "_");
+        return clean.Length > 100 ? clean[..100] : clean.Trim('_');
+    }
+
+    internal static string SanitizeFilename(string input)
+    {
+        throw new NotImplementedException();
+    }
+}
+
+//──────────── OCR stub ────────────
+internal static class OcrHelper
+{
+    public static Task<string> RunAsync(string file) => Task.FromResult(string.Empty);
+}
+
+// Helper classes/enums that might be defined elsewhere (e.g., AIOrganizerSettings.cs)
+// but are referenced here. Assuming they exist.
+
+public class AIOrganizerSettings
+{
+    public LlmProvider Provider { get; set; }
+    public string ApiKey { get; set; } = string.Empty;
+    public string? AzureEndpoint { get; set; }
+    public string ModelName { get; set; } = "gemini-1.5-flash-latest"; // Or your default
+    public string? AzureDeployment { get; set; }
+    public bool EnableFileRenaming { get; set; } = true;
+    public List<string> SupportedExtensions { get; set; } = new List<string> { ".txt", ".pdf", ".docx", ".md" };
+    public string FallbackCategory { get; set; } = "Overig";
+    public Dictionary<string, string> Categories { get; set; } = new Dictionary<string, string> {
+        { "Bedrijfsadministratie", "1. Bedrijfsadministratie" },
+        { "Belastingen", "2. Belastingen" },
+        // ... add other default categories
+    };
+    public int MaxPromptChars { get; set; } = 4000;
+    public bool EnableDescriptiveFilenames { get; set; } = true;
+    public bool EnableOcr { get; set; } = false; // Assuming OCR is off by default
+}
+
+public enum LlmProvider
+{
+    Gemini,
+    AzureOpenAI,
+    OpenAI
 }
